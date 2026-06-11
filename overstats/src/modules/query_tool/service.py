@@ -225,7 +225,6 @@ class QueryToolModule:
         self.requests = requests or QueryToolRequests()
 
     def load(self, *, force_refresh: bool = False) -> Dict[str, Any]:
-        global _CONFIG_CACHE
         if force_refresh:
             return self.refresh(force=True)
         if _CONFIG_CACHE is not None:
