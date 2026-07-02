@@ -12,19 +12,19 @@ from typing import Any, Callable, Dict, Optional, Sequence
 
 try:
     from overstats.src.modules.errors import ModuleError
-    from overstats.src.modules.font_utils import RENDER_FONT_CACHE_VERSION
 except ModuleNotFoundError:
     from src.modules.errors import ModuleError
-    from src.modules.font_utils import RENDER_FONT_CACHE_VERSION
 
-from .render import RenderedImage, render_ow_shop
+from .render import MAX_RENDER_BYTES, RenderedImage, render_ow_shop
 from .requests import OWShopRequests, OWShopSection, SHOP_SECTION_SOURCES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CACHE_ROOT = PROJECT_ROOT / "cache" / "ow_shop"
 CACHE_TTL_SECONDS = 15 * 60
-OW_SHOP_UNAVAILABLE_MESSAGE = "OW \u5546\u5e97\u6570\u636e\u6682\u65f6\u4e0d\u53ef\u7528\u3002"
+OW_SHOP_UNAVAILABLE_MESSAGE = "OW 商店数据暂时不可用。"
+
+RENDER_CACHE_VERSION = "v2"
 
 
 @dataclass(frozen=True)
@@ -57,7 +57,13 @@ class OWShopModule:
         self.time_provider = time_provider or time.time
         self.renderer = renderer or render_ow_shop
         self.data_cache_path = self.cache_root / "shop_data.json"
-        self.image_cache_path = self.cache_root / f"shop_image_v{RENDER_FONT_CACHE_VERSION}.png"
+        self.image_cache_path = self.cache_root / f"shop_image.{RENDER_CACHE_VERSION}.rendered"
+        self.stale_image_cache_paths = (
+            self.cache_root / "shop_image.rendered",
+            self.cache_root / "shop_image.png",
+            self.cache_root / "shop_image.jpg",
+            self.cache_root / "shop_image.jpeg",
+        )
         self.image_asset_dir = self.cache_root / "images"
 
     async def query_shop(self, *, render: bool = False) -> OWShopOutput:
@@ -138,7 +144,7 @@ class OWShopModule:
         ]
         asset_paths = await self.requests.cache_images(image_urls, self.image_asset_dir)
         try:
-            return self.renderer(sections=sections, generated_at=generated_at, asset_paths=asset_paths)
+            rendered = self.renderer(sections=sections, generated_at=generated_at, asset_paths=asset_paths)
         except RuntimeError as exc:
             raise ModuleError(
                 error="render_dependency_missing",
@@ -146,6 +152,17 @@ class OWShopModule:
                 status_code=500,
                 hint="Install Pillow in the runtime environment to enable image rendering.",
             ) from exc
+        if len(rendered.content) > MAX_RENDER_BYTES:
+            print(
+                f"[overstats] ow_shop render is still oversized after compression: "
+                f"bytes={len(rendered.content)} limit={MAX_RENDER_BYTES}"
+            )
+        elif rendered.media_type != "image/png":
+            print(
+                f"[overstats] ow_shop render exceeded png budget and was compressed: "
+                f"media_type={rendered.media_type} bytes={len(rendered.content)}"
+            )
+        return rendered
 
     def _load_cached_snapshot(self) -> Optional[Dict[str, Any]]:
         if not self.data_cache_path.exists():
@@ -164,22 +181,29 @@ class OWShopModule:
         return payload
 
     def _load_cached_render(self) -> Optional[RenderedImage]:
-        if not self.image_cache_path.exists():
-            return None
-        try:
-            return RenderedImage(content=self.image_cache_path.read_bytes())
-        except Exception as exc:
-            print(f"[overstats] failed to read ow_shop image cache {self.image_cache_path}: {exc}")
-            return None
+        for cache_path in (self.image_cache_path,):
+            if not cache_path.exists():
+                continue
+            try:
+                content = cache_path.read_bytes()
+            except Exception as exc:
+                print(f"[overstats] failed to read ow_shop image cache {cache_path}: {exc}")
+                continue
+            if len(content) > MAX_RENDER_BYTES:
+                try:
+                    cache_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            return RenderedImage(content=content, media_type=_detect_image_media_type(content))
+        return None
 
     def _delete_stale_render_cache(self) -> None:
-        try:
-            self.image_cache_path.unlink(missing_ok=True)
-            legacy_path = self.cache_root / "shop_image.png"
-            if legacy_path != self.image_cache_path:
-                legacy_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for cache_path in (self.image_cache_path, *self.stale_image_cache_paths):
+            try:
+                cache_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _write_json_atomic(self, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,6 +234,14 @@ class OWShopModule:
 
     def _format_generated_at(self, timestamp: float) -> str:
         return dt.datetime.fromtimestamp(float(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _detect_image_media_type(content: bytes) -> str:
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return "application/octet-stream"
 
 
 ow_shop_module = OWShopModule()

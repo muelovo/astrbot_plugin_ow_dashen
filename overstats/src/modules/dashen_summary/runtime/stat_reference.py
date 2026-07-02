@@ -6,7 +6,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 HERO_AVG_PERCENT_KEYWORDS = ("率", "效率", "占比")
 HERO_AVG_PERCENT_TEXTS = {"英雄获胜"}
-HERO_AVG_RAW_VALUE_TEXTS = {"累计游戏时间", "累积游戏时间"}
+HERO_AVG_RAW_VALUE_TEXTS = {"英雄获胜", "累计游戏时间", "累积游戏时间"}
 HERO_AVG_RAW_VALUE_GUIDS = {"603482350067646497", "603482350067648623"}
 HERO_AVG_SKIP_VALUE_GUIDS = {"603482350067646497"}
 
@@ -35,16 +35,12 @@ def normalize_hero_rank_score(rank_score: Any) -> Optional[int]:
     if rank_score is None:
         return None
     try:
-        rank_score = float(rank_score)
+        rank_score = int(rank_score)
     except (TypeError, ValueError):
         return None
-    if rank_score <= 0:
-        return None
     if rank_score >= 100:
-        bucket = int(round(rank_score / 100.0) * 10)
-    else:
-        bucket = int(round(rank_score / 10.0) * 10)
-    return max(10, min(50, bucket))
+        return rank_score // 100
+    return rank_score
 
 
 def get_hero_avg_percent_guids(config: dict[str, Any], stat_guids: Optional[Iterable[Any]] = None) -> list[str]:

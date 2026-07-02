@@ -3,7 +3,6 @@ import base64
 import datetime
 import hashlib
 import json
-import logging
 import os
 import random
 import re
@@ -16,12 +15,6 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from ....constants.backgrounds import build_random_map_background
-from .....paths import ensure_dir, get_overstats_data_dir
-
-try:
-    from overstats.src.modules.font_utils import RES_DIR as _FONT_RES_DIR, load_chinese_font
-except ModuleNotFoundError:
-    from src.modules.font_utils import RES_DIR as _FONT_RES_DIR, load_chinese_font
 
 from .dashen import (
     dashen_api_client,
@@ -39,7 +32,10 @@ from .perf_log import append_perf_log
 from .render_gate import get_global_render_limit, get_global_render_semaphore
 from .stat_reference import get_cached_statmap_summary as _shared_get_cached_statmap_summary
 
-logger = logging.getLogger("astrbot")
+try:
+    from overstats.src.modules.font_resolver import load_font
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font
 
 
 def _read_env_int(name, default):
@@ -54,13 +50,11 @@ def _read_env_int(name, default):
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-RESOURCE_DIR = _FONT_RES_DIR
-OVERSTATS_DATA_DIR = get_overstats_data_dir()
-QUERY_TOOL_ASSET_DIR = ensure_dir(OVERSTATS_DATA_DIR / "query_tool_assets")
-SUMMARY_EXTRA_ASSET_DIR = ensure_dir(QUERY_TOOL_ASSET_DIR / "extra")
-CONFIG_PATH = str(OVERSTATS_DATA_DIR / "query_tool.json")
-SUMMARY_RUNTIME_CACHE_DIR = ensure_dir(OVERSTATS_DATA_DIR / "dashen_summary_runtime_cache")
-RANK_DISTRIBUTION_CACHE_DIR = str(ensure_dir(SUMMARY_RUNTIME_CACHE_DIR / "rank_distribution_daily"))
+RESOURCE_DIR = PROJECT_ROOT / "res"
+QUERY_TOOL_ASSET_DIR = RESOURCE_DIR / "query_tool_assets"
+SUMMARY_EXTRA_ASSET_DIR = QUERY_TOOL_ASSET_DIR / "extra"
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "res", "query_tool.json")
+RANK_DISTRIBUTION_CACHE_DIR = os.path.join(MODULE_DIR, "cache", "rank_distribution_daily")
 SEASON_SUMMARY_URL_LIMIT = 6
 SEASON_SUMMARY_RENDER_CONCURRENCY = get_global_render_limit()
 SEASON_SUMMARY_RENDER_LOG_WAIT_MS = 200
@@ -137,7 +131,7 @@ async def _run_summary_render_async(label, awaitable_factory):
     async with _get_summary_render_semaphore():
         wait_ms = int((loop.time() - queued_at) * 1000)
         if wait_ms >= SEASON_SUMMARY_RENDER_LOG_WAIT_MS:
-            logger.debug(
+            print(
                 f"[season-summary-render] step={label} wait_ms={wait_ms} "
                 f"limit={SEASON_SUMMARY_RENDER_CONCURRENCY}"
             )
@@ -150,7 +144,7 @@ async def _run_summary_render_sync(label, func, *args):
     async with _get_summary_render_semaphore():
         wait_ms = int((loop.time() - queued_at) * 1000)
         if wait_ms >= SEASON_SUMMARY_RENDER_LOG_WAIT_MS:
-            logger.debug(
+            print(
                 f"[season-summary-render] step={label} wait_ms={wait_ms} "
                 f"limit={SEASON_SUMMARY_RENDER_CONCURRENCY}"
             )
@@ -235,6 +229,16 @@ QUICK_DIST_BUCKET_START = 1000
 QUICK_DIST_BUCKET_END = 4900
 QUICK_DIST_BUCKET_STEP = 100
 QUICK_DIST_SNAPSHOT_VERSION = 2
+QUICK_DIST_RANK_SPANS = (
+    (1000, 1500, "青铜"),
+    (1500, 2000, "白银"),
+    (2000, 2500, "黄金"),
+    (2500, 3000, "白金"),
+    (3000, 3500, "钻石"),
+    (3500, 4000, "大师"),
+    (4000, 4500, "宗师"),
+    (4500, 5000, "英杰"),
+)
 
 
 def _extract_match_entries(payload, *preferred_keys):
@@ -1179,6 +1183,17 @@ def _major_rank_breakpoints():
     ]
 
 
+def _quick_dist_rank_label(score):
+    bucket = _score_bucket_key(score)
+    if bucket is None:
+        return "未定级"
+    for lower, upper, label in QUICK_DIST_RANK_SPANS:
+        if lower <= bucket < upper:
+            tier_idx = max(0, min(4, int((bucket - lower) // QUICK_DIST_BUCKET_STEP)))
+            return f"{label}{5 - tier_idx}"
+    return "英杰1"
+
+
 def _is_rank_distribution_snapshot_compatible(snapshot):
     if not isinstance(snapshot, dict):
         return False
@@ -1391,6 +1406,7 @@ async def _build_quick_strength_distribution_data(customer_token, matches):
                 "match_id": match.get("matchId"),
                 "bucket": bucket,
                 "avg_score": avg_score,
+                "rank_label": _quick_dist_rank_label(avg_score),
                 "count": int(bucket_counts.get(str(bucket), 0)),
                 "begin_ts": _num(match.get("beginTs")),
                 "map_guid": match.get("mapGuid"),
@@ -1416,7 +1432,21 @@ def _load_font(size, bold=False):
     if cached is not None:
         return cached
 
-    font = load_chinese_font(int(size), bold=bold)
+    adjusted_size = int(size)
+    if adjusted_size <= 11:
+        adjusted_size += 1
+    elif adjusted_size <= 14:
+        adjusted_size += 2
+    elif adjusted_size <= 18:
+        adjusted_size += 1
+    size = adjusted_size
+    font = load_font(
+        size,
+        name="simhei.ttf",
+        fallback="en.ttf",
+        prefer_cjk=True,
+        bold=bold,
+    )
     _SUMMARY_FONT_CACHE[cache_key] = font
     return font
 
@@ -1616,87 +1646,115 @@ def _draw_quick_strength_distribution(draw, box, dist_data):
     x1, y1, x2, y2 = box
     inner_x1 = x1 + 28
     inner_x2 = x2 - 28
-    curve_top = y1 + 24
-    curve_bottom = y2 - 60
-    center_y = (curve_top + curve_bottom) / 2
-    label_y = y2 - 34
+    axis_y = y2 - 44
+    label_y = y2 - 24
 
-    if not dist_data or not dist_data.get("bucket_counts"):
+    if not dist_data:
         draw.text((inner_x1, y1 + 48), "暂无可用的快速强度分布数据", font=_load_font(18), fill=(145, 155, 170))
         return
-
-    bucket_keys = _all_rank_bucket_keys()
-    bucket_counts = {
-        int(bucket): int((dist_data.get("bucket_counts") or {}).get(str(bucket), 0))
-        for bucket in bucket_keys
-    }
-    peak_count = max(bucket_counts.values() or [0])
-    if peak_count <= 0:
-        draw.text((inner_x1, y1 + 48), "段位分布快照为空，暂时无法绘制", font=_load_font(18), fill=(145, 155, 170))
-        return
-
-    non_zero_buckets = [bucket for bucket in bucket_keys if bucket_counts.get(bucket, 0) > 0]
-    if not non_zero_buckets:
-        draw.text((inner_x1, y1 + 48), "段位分布快照为空，暂时无法绘制", font=_load_font(18), fill=(145, 155, 170))
-        return
-
-    first_idx = bucket_keys.index(non_zero_buckets[0])
-    last_idx = bucket_keys.index(non_zero_buckets[-1])
-    pad = 2 if first_idx == last_idx else 1
-    visible_start_idx = max(0, first_idx - pad)
-    visible_end_idx = min(len(bucket_keys) - 1, last_idx + pad)
-    visible_bucket_keys = bucket_keys[visible_start_idx : visible_end_idx + 1]
-    step_x = (inner_x2 - inner_x1) / max(len(visible_bucket_keys) - 1, 1)
-    amplitude = max(42, curve_bottom - curve_top)
-    point_map = {}
-    points = []
-    for idx, bucket in enumerate(visible_bucket_keys):
-        ratio = bucket_counts[bucket] / max(peak_count, 1)
-        ratio = ratio ** 0.82 if ratio > 0 else 0
-        x = inner_x1 + idx * step_x
-        y = curve_bottom - ratio * amplitude
-        point_map[bucket] = (x, y)
-        points.append((x, y))
-
-    if len(points) == 1:
-        px, py = points[0]
-        draw.ellipse((px - 8, py - 8, px + 8, py + 8), fill=(72, 211, 255, 255))
-    else:
-        smooth_points = _smooth_polyline(points, steps=18)
-        draw.line(smooth_points, fill=(72, 211, 255, 255), width=5)
-
-    draw.line((inner_x1, center_y, inner_x2, center_y), fill=(72, 94, 122, 120), width=1)
-
-    for label, bucket in _major_rank_breakpoints():
-        point = point_map.get(bucket)
-        if not point:
-            continue
-        text = _truncate_to_width(draw, label, _load_font(12), 48)
-        text_w = _text_size(draw, text, _load_font(12))[0]
-        draw.text((point[0] - text_w / 2, label_y), text, font=_load_font(12), fill=(158, 170, 188))
 
     sampled_matches = sorted(
         dist_data.get("sampled_matches") or [],
         key=lambda item: item.get("begin_ts") or 0,
     )
+    grouped_samples = OrderedDict()
     for sample in sampled_matches:
-        bucket = _score_bucket_key(sample.get("avg_score"))
-        point = point_map.get(bucket)
-        if not point:
+        bucket = _score_bucket_key(sample.get("bucket") or sample.get("avg_score"))
+        if bucket is None:
             continue
-        count = max(1, int(sample.get("count") or 0))
-        length_ratio = count / max(peak_count, 1)
-        bar_h = int(42 + 108 * (length_ratio ** 0.8))
-        bar_w = 18
-        cx, _ = point
-        top = max(y1 + 22, int(center_y - bar_h / 2))
-        bottom = min(y2 - 48, int(center_y + bar_h / 2))
-        color = (149, 224, 247, 230) if _int(sample.get("result")) == 1 else (126, 203, 235, 210)
-        draw.rounded_rectangle(
-            (int(cx - bar_w / 2), top, int(cx + bar_w / 2), bottom),
-            radius=bar_w // 2,
-            fill=color,
+        group = grouped_samples.setdefault(
+            bucket,
+            {
+                "bucket": bucket,
+                "rank_label": str(sample.get("rank_label") or _quick_dist_rank_label(bucket)),
+                "sample_count": 0,
+                "wins": 0,
+                "losses": 0,
+            },
         )
+        group["sample_count"] += 1
+        result = _int(sample.get("result"))
+        if result == 1:
+            group["wins"] += 1
+        elif result == -1:
+            group["losses"] += 1
+
+    if not grouped_samples:
+        draw.text((inner_x1, y1 + 48), "暂无可用的快速对局强度样本", font=_load_font(18), fill=(145, 155, 170))
+        return
+
+    bucket_keys = _all_rank_bucket_keys()
+    visible_buckets = sorted(grouped_samples.keys())
+    first_idx = max(0, bucket_keys.index(min(visible_buckets)) - 1)
+    last_idx = min(len(bucket_keys) - 1, bucket_keys.index(max(visible_buckets)) + 1)
+    visible_bucket_keys = bucket_keys[first_idx : last_idx + 1]
+    bucket_x_map = {}
+    if len(visible_bucket_keys) == 1:
+        bucket_x_map[visible_bucket_keys[0]] = (inner_x1 + inner_x2) / 2
+    else:
+        step_x = (inner_x2 - inner_x1) / max(len(visible_bucket_keys) - 1, 1)
+        for idx, bucket in enumerate(visible_bucket_keys):
+            bucket_x_map[bucket] = inner_x1 + idx * step_x
+
+    sample_total = sum(int(group.get("sample_count") or 0) for group in grouped_samples.values())
+    summary_text = f"抽样 {sample_total} 场 / 覆盖 {len(grouped_samples)} 个强度段位"
+    summary_w = _text_size(draw, summary_text, _load_font(12))[0]
+    draw.text((inner_x2 - summary_w, y1 + 4), summary_text, font=_load_font(12), fill=(158, 170, 188))
+
+    draw.line((inner_x1, axis_y, inner_x2, axis_y), fill=(72, 94, 122, 140), width=2)
+
+    for label, lower, upper in QUICK_DIST_RANK_SPANS:
+        rank_buckets = [bucket for bucket in visible_bucket_keys if lower <= bucket < upper]
+        if not rank_buckets:
+            continue
+        center_bucket = rank_buckets[len(rank_buckets) // 2]
+        text = _truncate_to_width(draw, label, _load_font(12), 48)
+        text_w = _text_size(draw, text, _load_font(12))[0]
+        draw.text((bucket_x_map[center_bucket] - text_w / 2, label_y), text, font=_load_font(12), fill=(158, 170, 188))
+
+    chip_rows = [y1 + 26, y1 + 58]
+    for idx, group in enumerate(sorted(grouped_samples.values(), key=lambda item: item.get("bucket") or 0)):
+        bucket = int(group["bucket"])
+        center_x = bucket_x_map.get(bucket)
+        if center_x is None:
+            continue
+
+        row_y = chip_rows[idx % len(chip_rows)]
+        sample_count = max(1, int(group.get("sample_count") or 0))
+        wins = int(group.get("wins") or 0)
+        losses = int(group.get("losses") or 0)
+        if wins and not losses:
+            fill = (100, 206, 255, 232)
+            outline = (160, 228, 255, 250)
+        elif losses and not wins:
+            fill = (63, 106, 148, 228)
+            outline = (118, 162, 204, 245)
+        else:
+            fill = (86, 152, 201, 230)
+            outline = (150, 207, 236, 248)
+
+        label_text = str(group.get("rank_label") or _quick_dist_rank_label(bucket))
+        if sample_count > 1:
+            label_text = f"{label_text} x{sample_count}"
+        label_text = _truncate_to_width(draw, label_text, _load_font(14, bold=True), 96)
+        text_w, _ = _text_size(draw, label_text, _load_font(14, bold=True))
+        chip_w = max(54, min(104, int(text_w + 24)))
+        chip_h = 24
+        chip_x1 = int(center_x - chip_w / 2)
+        chip_x1 = max(inner_x1, min(chip_x1, inner_x2 - chip_w))
+        chip_y1 = int(row_y)
+        chip_x2 = chip_x1 + chip_w
+        chip_y2 = chip_y1 + chip_h
+
+        draw.line((int(center_x), chip_y2 + 4, int(center_x), axis_y - 8), fill=(86, 126, 164, 130), width=2)
+        draw.ellipse((int(center_x - 4), axis_y - 4, int(center_x + 4), axis_y + 4), fill=outline)
+        draw.rounded_rectangle((chip_x1, chip_y1, chip_x2, chip_y2), radius=12, fill=fill, outline=outline, width=1)
+
+        text_box = _text_box(draw, label_text, _load_font(14, bold=True))
+        text_h = text_box[3] - text_box[1]
+        text_x = chip_x1 + (chip_w - text_w) / 2
+        text_y = chip_y1 + (chip_h - text_h) / 2 - text_box[1]
+        draw.text((text_x, text_y), label_text, font=_load_font(14, bold=True), fill=(245, 249, 255))
 
 
 
@@ -3218,7 +3276,7 @@ async def _render_period_image(
     _draw_quick_strength_distribution(draw, (50, quick_dist_y1 + 52, 1350, quick_dist_y1 + quick_dist_h - 10), quick_dist_data)
     _render_step(
         "QUICK_DIST_DONE",
-        extra=f"points={len(quick_dist_data or []) if isinstance(quick_dist_data, list) else 0}",
+        extra=f"points={len((quick_dist_data or {}).get('sampled_matches') or [])}",
     )
 
     _card(draw, (50, bottom_y1, 665, bottom_y1 + bottom_h), "高光数据")
@@ -3552,7 +3610,7 @@ async def render_period_conclusion(
         "DETAIL_AND_QUICK_DIST_DONE",
         extra=(
             f"detail_count={len(detail_pairs)}; "
-            f"quick_dist_points={len(quick_dist_data or []) if isinstance(quick_dist_data, list) else 0}"
+            f"quick_dist_points={len((quick_dist_data or {}).get('sampled_matches') or [])}"
         ),
     )
     stats = _build_stats(matches, detail_pairs, resolved_target)

@@ -9,6 +9,7 @@ from .request_metrics import (
 from .match_stats import IDPoolDB, MATCH_STATS_DB_PATH
 from .player_identity import (
     PLAYER_IDENTITY_TABLE,
+    PlayerIdentityRecorder,
     extract_identity_records,
     normalize_battletag,
     normalize_identity_record,
@@ -32,6 +33,7 @@ __all__ = [
     "OWHeroLeaderboardDB",
     "OW_HERO_LEADERBOARD_DB_PATH",
     "PLAYER_IDENTITY_TABLE",
+    "PlayerIdentityRecorder",
     "extract_identity_records",
     "normalize_battletag",
     "normalize_identity_record",

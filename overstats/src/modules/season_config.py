@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -14,12 +13,10 @@ except ModuleNotFoundError:
     from paths import get_overstats_data_dir
 
 
-logger = logging.getLogger("astrbot")
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-STATIC_QUERY_TOOL_PATH = PROJECT_ROOT / "res" / "query_tool.json"
-RUNTIME_QUERY_TOOL_PATH = get_overstats_data_dir() / "query_tool.json"
-DEFAULT_DASHEN_CURRENT_SEASON = 23
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_QUERY_TOOL_PATH = PROJECT_ROOT / "res" / "query_tool.json"
+QUERY_TOOL_PATH = get_overstats_data_dir() / "query_tool.json"
+DEFAULT_DASHEN_CURRENT_SEASON = 22
 DEFAULT_DASHEN_HISTORY_START_SEASON = 15
 
 
@@ -53,33 +50,33 @@ def _extract_auto_dashen_season(config: Mapping[str, Any]) -> int:
     return latest
 
 
+def get_query_tool_path() -> Path:
+    return QUERY_TOOL_PATH
+
+
 def get_dashen_manual_season() -> int:
-    injected = getattr(app_config, "_INJECTED_CONFIG", None) or {}
-    injected_global = injected.get("dashen_global", {}) if isinstance(injected, Mapping) else {}
-    configured = injected_global.get("dashen_current_season", getattr(app_config, "DASHEN_CURRENT_SEASON", DEFAULT_DASHEN_CURRENT_SEASON))
+    configured = getattr(app_config, "DASHEN_CURRENT_SEASON", DEFAULT_DASHEN_CURRENT_SEASON)
     return _safe_positive_int(configured) or DEFAULT_DASHEN_CURRENT_SEASON
 
 
 def get_dashen_history_start_season() -> int:
-    injected = getattr(app_config, "_INJECTED_CONFIG", None) or {}
-    injected_global = injected.get("dashen_global", {}) if isinstance(injected, Mapping) else {}
-    configured = injected_global.get("dashen_history_start_season", getattr(app_config, "DASHEN_HISTORY_START_SEASON", DEFAULT_DASHEN_HISTORY_START_SEASON))
+    configured = getattr(app_config, "DASHEN_HISTORY_START_SEASON", DEFAULT_DASHEN_HISTORY_START_SEASON)
     return _safe_positive_int(configured) or DEFAULT_DASHEN_HISTORY_START_SEASON
 
 
 def read_local_query_tool(default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     fallback = dict(default or {})
-    for path in (RUNTIME_QUERY_TOOL_PATH, STATIC_QUERY_TOOL_PATH):
-        if not path.exists():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.debug(f"[overstats] failed to read query tool season config {path}: {exc}")
-            continue
-        if isinstance(payload, dict):
-            return normalize_query_tool_config(payload)
-    return normalize_query_tool_config(fallback)
+    path = QUERY_TOOL_PATH if QUERY_TOOL_PATH.exists() else DEFAULT_QUERY_TOOL_PATH
+    if not path.exists():
+        return normalize_query_tool_config(fallback)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[overstats] failed to read query_tool season config {path}: {exc}")
+        return normalize_query_tool_config(fallback)
+    if not isinstance(payload, dict):
+        return normalize_query_tool_config(fallback)
+    return normalize_query_tool_config(payload)
 
 
 def get_dashen_auto_season(query_tool_config: Optional[Mapping[str, Any]] = None) -> int:
@@ -136,7 +133,10 @@ def parse_dashen_season_time(value: Any) -> Optional[dt.datetime]:
 
 
 def get_dashen_season_rollover_at(query_tool_config: Optional[Mapping[str, Any]] = None) -> Optional[dt.datetime]:
-    config = read_local_query_tool(default={}) if query_tool_config is None else normalize_query_tool_config(query_tool_config)
+    if query_tool_config is None:
+        config = read_local_query_tool(default={})
+    else:
+        config = normalize_query_tool_config(query_tool_config)
     current_season = get_dashen_current_season(config)
     season_list = config.get("seasonList")
     if not isinstance(season_list, Mapping):

@@ -8,27 +8,20 @@ import time
 from typing import Any, Dict, Sequence
 
 try:
-    from overstats.src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        load_chinese_font,
-        load_font as load_resource_font,
-        load_summary_style_fonts,
-    )
     from overstats.src.modules.query_tool import get_cached_asset_path, load_query_tool
 except ModuleNotFoundError:
-    from src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        load_chinese_font,
-        load_font as load_resource_font,
-        load_summary_style_fonts,
-    )
     from src.modules.query_tool import get_cached_asset_path, load_query_tool
+
+try:
+    from overstats.src.modules.font_resolver import load_font, resolve_resource_dir
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font, resolve_resource_dir
 
 from .engine import HeroBillboardEntry, HeroUsageRow, ProfileRenderContext, RolePanelEntry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-RESOURCE_DIR = _FONT_RES_DIR
+RESOURCE_DIR = resolve_resource_dir()
 QUERY_TOOL_ASSET_DIR = RESOURCE_DIR / "query_tool_assets"
 ROLE_ICON_FILENAMES = {
     "tank": "tank.png",
@@ -36,30 +29,30 @@ ROLE_ICON_FILENAMES = {
     "healer": "healer.png",
 }
 
-STR_NO_TITLE = "\u65e0\u5934\u8854"
-STR_INFO_SWITCH_MODE = "[INFO] \u5728\u6307\u4ee4\u540e\u9644\u52a0*\u53f7\u53ef\u5207\u6362\u4e3a\u67e5\u8be2\u7ade\u6280\u6a21\u5f0f\u6bd4\u8d5b\u6570\u636e"
-STR_RACE_PROGRESS = "\u7ade\u9010\u8fdb\u5ea6\u4f30\u7b97"
-STR_WEEK_COMMENT = "\u672c\u5468\u8868\u73b0"
-STR_HONOR = "\u70b9\u8d5e/\u88ab\u8d5e"
-STR_REPORTED = "\u88ab\u4e3e\u62a5"
-STR_ROLE_TANK = "\u91cd\u88c5"
-STR_ROLE_DPS = "\u8f93\u51fa"
-STR_ROLE_HEALER = "\u652f\u63f4"
-STR_ROLE_OPEN = "\u5f00\u653e"
-STR_RANK_SUFFIX = "\u5f3a"
-STR_LEVEL_SUFFIX = "\u7ea7"
-STR_LEFTOVER_OPEN = "\u5f00\u653e\u5730\u533a\u767e\u5f3a\u672a\u5217\u51fa\u90e8\u5206"
-STR_LEFTOVER_PRESET = "\u9884\u8bbe\u767e\u5f3a\u672a\u5217\u51fa\u90e8\u5206"
-STR_UNKNOWN_MAP = "\u672a\u77e5\u5730\u56fe"
-STR_STAT_KILL = "\u6d88\u706d"
-STR_STAT_DAMAGE = "\u4f24\u5bb3"
-STR_STAT_CURE = "\u6cbb\u7597"
-STR_STAT_RESIST = "\u62b5\u6321"
-STR_STAT_SURVIVE = "\u751f\u5b58"
-STR_STAT_DEATH = "\u9635\u4ea1"
-STR_STAT_AVG = "\u5747"
-STR_STAT_RECENT = "\u8fd1"
-STR_STAT_SERVER = "\u670d"
+STR_NO_TITLE = "无头衔"
+STR_INFO_SWITCH_MODE = "[INFO] 在指令后附加*号可切换为查询竞技模式比赛数据"
+STR_RACE_PROGRESS = "竞逐进度估算"
+STR_WEEK_COMMENT = "本周表现"
+STR_HONOR = "点赞/被赞"
+STR_REPORTED = "被举报"
+STR_ROLE_TANK = "重装"
+STR_ROLE_DPS = "输出"
+STR_ROLE_HEALER = "支援"
+STR_ROLE_OPEN = "开放"
+STR_RANK_SUFFIX = "强"
+STR_LEVEL_SUFFIX = "级"
+STR_LEFTOVER_OPEN = "开放地区百强未列出部分"
+STR_LEFTOVER_PRESET = "预设百强未列出部分"
+STR_UNKNOWN_MAP = "未知地图"
+STR_STAT_KILL = "消灭"
+STR_STAT_DAMAGE = "伤害"
+STR_STAT_CURE = "治疗"
+STR_STAT_RESIST = "抵挡"
+STR_STAT_SURVIVE = "生存"
+STR_STAT_DEATH = "阵亡"
+STR_STAT_AVG = "均"
+STR_STAT_RECENT = "近"
+STR_STAT_SERVER = "服"
 COLOR_COMPETITIVE = "#C95472"
 
 
@@ -262,10 +255,10 @@ def _draw_race_progress(draw: Any, race_progress: Dict[str, Any] | None, fonts: 
 
     progress_meta = (
         f"{progress_score}/{progress_cap}  "
-        f"\u80dc{_safe_int(race_progress.get('wins'))} "
-        f"\u8d1f{_safe_int(race_progress.get('losses'))} "
-        f"\u7ec4\u961f\u80dc{_safe_int(race_progress.get('group_wins'))} "
-        f"\u8282\u70b9{reached_count}/{len(race_progress.get('checkpoints', []))}"
+        f"胜{_safe_int(race_progress.get('wins'))} "
+        f"负{_safe_int(race_progress.get('losses'))} "
+        f"组队胜{_safe_int(race_progress.get('group_wins'))} "
+        f"节点{reached_count}/{len(race_progress.get('checkpoints', []))}"
     )
     progress_note = str(race_progress.get("note") or "")
     progress_fill_color = "#2F7D57"
@@ -330,6 +323,9 @@ def _draw_race_progress(draw: Any, race_progress: Dict[str, Any] | None, fonts: 
 
 
 def _draw_role_panel(image: Any, draw: Any, entries: Sequence[RolePanelEntry], fonts: Dict[str, Any]) -> None:
+    if not entries:
+        return
+
     role_map = {entry.role_type: entry for entry in entries}
     for role_type, y_pos in (("tank", 817), ("dps", 891), ("healer", 964), ("open", 1038)):
         entry = role_map.get(role_type)
@@ -567,13 +563,14 @@ def _draw_top_heroes(
         center_x = slot_x + 64
         hero_info = _find_hero(config, row.hero_guid)
         hero_name = str(hero_info.get("name") or row.payload.get("heroName") or row.hero_guid)
-        ring_color = _hero_ring_color(config, hero_name)
+        ring_color = _resolve_row_hero_color(config, row, hero_name)
+        title_text = hero_name if row.hero_level <= 0 else f"{hero_name} {row.hero_level}{STR_LEVEL_SUFFIX}"
 
         _draw_centered_mixed_text_with_shadow(
             draw,
             center_x,
             610,
-            f"{hero_name} {row.hero_level}{STR_LEVEL_SUFFIX}",
+            title_text,
             label_font=fonts["font_cn_small"],
             number_font=fonts["font_cn_small"],
             fill="#20283C",
@@ -592,6 +589,7 @@ def _draw_top_heroes(
 
         icon = None
         for candidate_url in (
+            row.payload.get("heroIconUrl"),
             hero_info.get("smallIconUrl"),
             hero_info.get("ddHeroIcon"),
             hero_info.get("icon"),
@@ -603,7 +601,7 @@ def _draw_top_heroes(
             icon = _resize_image(crop_to_circle(icon, 15, ring_color), (128, 128))
             image.paste(icon, (slot_x, 448), icon)
 
-        tier_icon = _load_level_tier_icon(_hero_level_tier(row.hero_level))
+        tier_icon = _load_level_tier_icon(_hero_level_tier(row.hero_level)) if row.hero_level > 0 else None
         if tier_icon is not None:
             tier_icon = _resize_image(tier_icon, (80, 80))
             image.paste(tier_icon, (slot_x + 25, 538), tier_icon)
@@ -628,8 +626,8 @@ def _draw_hero_usage_block(
     for index, row in enumerate(rows):
         hero_info = _find_hero(config, row.hero_guid)
         hero_name = str(hero_info.get("name") or row.payload.get("heroName") or row.hero_guid)
-        hero_icon_url = str(hero_info.get("icon") or "")
-        ring_color = _hero_ring_color(config, hero_name)
+        hero_icon_url = str(hero_info.get("icon") or row.payload.get("heroIconUrl") or "")
+        ring_color = _resolve_row_hero_color(config, row, hero_name)
         y = 795 + index * 43
 
         base_bar = create_gradient_playtime_bar(620, 40, 5, (28, 34, 56), 1)
@@ -642,12 +640,13 @@ def _draw_hero_usage_block(
             icon = _resize_image(icon, (40, 40))
             image.paste(icon, (60, y))
 
-        tier_icon = _load_level_tier_icon(_hero_level_tier(row.hero_level))
+        tier_icon = _load_level_tier_icon(_hero_level_tier(row.hero_level)) if row.hero_level > 0 else None
         if tier_icon is not None:
             tier_icon = _resize_image(tier_icon, (32, 32))
             image.paste(tier_icon, (110, 799 + index * 43), tier_icon)
 
-        _draw_mixed_text(draw, 140, 802 + index * 43, f"{row.hero_level}{STR_LEVEL_SUFFIX}", label_font=fonts["font_cn_small"], number_font=fonts["font_cn_small"], fill="gold")
+        if row.hero_level > 0:
+            _draw_mixed_text(draw, 140, 802 + index * 43, f"{row.hero_level}{STR_LEVEL_SUFFIX}", label_font=fonts["font_cn_small"], number_font=fonts["font_cn_small"], fill="gold")
 
         if row.rank_overlay is not None:
             score_box_x = 523
@@ -760,7 +759,7 @@ def _draw_leftover_billboards(
         draw.text((800, 1120 + y_index * 30), STR_LEFTOVER_OPEN, font=fonts["font_cn_small"], fill="#1c2238")
         y_index += 1
         for billboard in open_billboards:
-            _draw_leftover_billboard_chip(image, draw, config, 800 + x_index * 200, 1120 + y_index * 30, billboard, fonts, show_hero_name=True, highlight_rank=False)
+            _draw_leftover_billboard_chip(image, draw, config, 800 + x_index * 200, 1120 + y_index * 30, billboard, fonts, show_hero_name=False, highlight_rank=True)
             x_index += 1
             if x_index >= 4:
                 x_index = 0
@@ -1287,6 +1286,19 @@ def _hero_ring_color(config: Dict[str, Any], hero_name: str) -> tuple[int, int, 
     return (128, 128, 128, 255)
 
 
+def _resolve_row_hero_color(config: Dict[str, Any], row: HeroUsageRow, hero_name: str) -> tuple[int, int, int, int]:
+    resolved = _hero_ring_color(config, hero_name)
+    if resolved != (128, 128, 128, 255):
+        return resolved
+    payload_color = str(row.payload.get("heroColor") or row.payload.get("hero_color") or "").strip()
+    if not payload_color:
+        return resolved
+    try:
+        return hex_to_rgba(payload_color)
+    except Exception:
+        return resolved
+
+
 def _measure_text_width(draw: Any, text: str, font: Any) -> int:
     try:
         return int(draw.textlength(text, font=font))
@@ -1511,7 +1523,6 @@ def _readable_playtime(game_time: float, *, quick_mode: bool) -> str:
 
 
 def _load_fonts() -> Dict[str, Any]:
-    cn = load_summary_style_fonts(1.0)
     return {
         "font_en": _load_font("en.ttf", 40),
         "font_en_header": _load_font("bignoodletoooblique.ttf", 32),
@@ -1524,37 +1535,28 @@ def _load_fonts() -> Dict[str, Any]:
         "font_en_small2": _load_font("bignoodletoooblique.ttf", 30),
         "font_en_match": _load_font("BigNoodleToo.ttf", 22),
         "font_en_match_small": _load_font("BigNoodleToo.ttf", 18),
-        "font_cn": cn["body"],
-        "font_cn_large": cn["name"],
-        "font_cn_small": cn["label"],
-        "font_cn_small_ex": cn["caption_xs"],
-        "font_num": cn["num"],
-        "font_num_small": cn["num_sm"],
+        "font_cn": _load_font("simhei.ttf", 40, windows_fallback=True),
+        "font_cn_large": _load_font("simhei.ttf", 80, windows_fallback=True),
+        "font_cn_small": _load_font("simhei.ttf", 25, windows_fallback=True),
+        "font_cn_small_ex": _load_font("simhei.ttf", 15, windows_fallback=True),
+        "font_num": _load_font("num.ttf", 30),
+        "font_num_small": _load_font("num.ttf", 18),
         "font_num_medium": _load_font("num.ttf", 24),
         "font_num_large": _load_font("num.ttf", 40),
         "font_num_huge": _load_font("num.ttf", 72),
         "font_rank_tier": _load_font("num.ttf", 88),
         "font_rank_tier_small": _load_font("num.ttf", 52),
         "font_rank_tier_recent": _load_font("num.ttf", 64),
-        "font_rank_overlay_num": cn["num_sm"],
+        "font_rank_overlay_num": _load_font("num.ttf", 24),
     }
 
 
 def _load_font(name: str, size: int, *, windows_fallback: bool = False) -> Any:
-    from PIL import ImageFont
-
-    if windows_fallback and name.lower() == "simhei.ttf":
-        return load_chinese_font(size)
-
-    candidates: list[Path | str] = [RESOURCE_DIR / name]
-    if not windows_fallback:
-        candidates.extend([Path("C:/Windows/Fonts/arial.ttf"), Path("C:/Windows/Fonts/msyh.ttc")])
-    for candidate in candidates:
-        try:
-            return ImageFont.truetype(str(candidate), size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
+    return load_font(
+        size,
+        name=name,
+        prefer_cjk=windows_fallback and name.lower() == "simhei.ttf",
+    )
 
 
 def create_gradient_playtime_bar(

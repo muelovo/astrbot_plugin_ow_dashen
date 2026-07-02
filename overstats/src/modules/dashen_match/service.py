@@ -22,6 +22,8 @@ except ModuleNotFoundError:
     from src.client.apiclient import DashenAPIClient
     from src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
     from src.modules.errors import ModuleError
+from ..analysis_common import build_async_client as build_analysis_async_client
+from ..analysis_common import get_analysis_proxy
 
 from .enhanced_render import (
     build_carry_index_data,
@@ -277,10 +279,10 @@ class DashenMatchModule:
         if index < 0 or index >= len(matches):
             raise ModuleError(
                 error="match_index_out_of_range",
-                message=f"Match index out of range: {index + 1}",
+                message=f"Match index out of range: {index}",
                 status_code=400,
-                hint=f"Use an index from 1 to {max(len(matches), 1)}.",
-                details={"index": index + 1, "match_count": len(matches)},
+                hint=f"Use an index from 0 to {max(len(matches) - 1, 0)}.",
+                details={"index": index, "match_count": len(matches)},
             )
         detail = await self.requests.get_match_detail(query.customer_token, matches[index])
         image = (
@@ -344,10 +346,10 @@ class DashenMatchModule:
             if index < 0 or index >= len(matches):
                 raise ModuleError(
                     error="match_index_out_of_range",
-                    message=f"Match index out of range: {index + 1}",
+                    message=f"Match index out of range: {index}",
                     status_code=400,
-                    hint=f"Use an index from 1 to {max(len(matches), 1)}.",
-                    details={"index": index + 1, "match_count": len(matches)},
+                    hint=f"Use an index from 0 to {max(len(matches) - 1, 0)}.",
+                    details={"index": index, "match_count": len(matches)},
                 )
             source_match = dict(matches[index])
             detail = await self.requests.get_match_detail(customer_token, source_match)
@@ -864,7 +866,7 @@ class DashenMatchModule:
         base = str(base_url or "").rstrip("/")
         if base.endswith("/chat/completions"):
             return base
-        if base.endswith("/v1"):
+        if base.endswith("/v1") or base.endswith("/openai"):
             return f"{base}/chat/completions"
         return f"{base}/chat/completions"
 
@@ -874,7 +876,8 @@ class DashenMatchModule:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=300) as client:
+        proxy_url = get_analysis_proxy(url)
+        async with build_analysis_async_client(timeout=300, proxy_url=proxy_url) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             return response.json()

@@ -1,5 +1,6 @@
 from .requests import QueryToolRequests
 from .service import (
+    cache_query_tool_asset_bytes,
     QueryToolModule,
     ensure_query_tool_assets,
     get_cached_asset_path,
@@ -12,6 +13,7 @@ from .service import (
 )
 
 __all__ = [
+    "cache_query_tool_asset_bytes",
     "QueryToolModule",
     "QueryToolRequests",
     "ensure_query_tool_assets",

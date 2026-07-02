@@ -1,23 +1,22 @@
 from __future__ import annotations
 
+from collections import Counter
 import math
 import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
-
-try:
-    from overstats.paths import ensure_dir, get_overstats_data_dir
-except ModuleNotFoundError:
-    from paths import ensure_dir, get_overstats_data_dir
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
-MATCH_STATS_DB_PATH = ensure_dir(get_overstats_data_dir() / "db") / "match_stats.sqlite3"
+MATCH_STATS_DB_PATH = Path(__file__).resolve().parent / "match_stats.sqlite3"
 PLAYER_IDENTITY_TABLE = "player_identity_map"
-
-_JSON_SUMMARY_LOCK = threading.Lock()
-_JSON_SUMMARY_CACHE: Optional[dict] = None
+HERO_MATCH_DETAIL_TABLE = "hero_match_detail"
+COMP_DATA_TABLE = "comp_data"
+COMP_DATA_SUMMARY_TABLE = "comp_data_summary"
+HERO_PERK_PICK_TABLE = "hero_perk_pick"
+HERO_PERK_SUMMARY_TABLE = "hero_perk_summary"
+OVERALL_RANK_BUCKET_KEY = -1
 
 
 class IDPoolDB:
@@ -78,9 +77,212 @@ class IDPoolDB:
             """
         )
 
+    def _table_exists(self, connection: sqlite3.Connection, table_name: str) -> bool:
+        try:
+            row = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (str(table_name or "").strip(),),
+            ).fetchone()
+        except Exception:
+            return False
+        return bool(row)
+
+    def _get_existing_columns(self, connection: sqlite3.Connection, table_name: str) -> set[str]:
+        try:
+            rows = connection.execute(f"PRAGMA table_info({table_name})").fetchall() or []
+        except Exception:
+            return set()
+        return {str(row[1]) for row in rows if len(row) > 1 and str(row[1])}
+
+    def _ensure_columns(
+        self,
+        connection: sqlite3.Connection,
+        table_name: str,
+        column_definitions: Sequence[tuple[str, str]],
+    ) -> None:
+        if not self._table_exists(connection, table_name):
+            return
+        existing = self._get_existing_columns(connection, table_name)
+        for column_name, column_sql in column_definitions:
+            if column_name in existing:
+                continue
+            try:
+                connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}")
+            except Exception as exc:
+                self._warn_once(
+                    f"match stats sqlite add column failed table={table_name} column={column_name}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+    def _initialize_match_detail_tables(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {HERO_MATCH_DETAIL_TABLE} (
+                match_id TEXT NOT NULL,
+                player_bnet_id TEXT NOT NULL,
+                player_name TEXT NOT NULL DEFAULT '',
+                hero_guid TEXT NOT NULL,
+                rank_score INTEGER,
+                rank_bucket INTEGER,
+                use_time_sec REAL NOT NULL DEFAULT 0,
+                use_time_rate REAL NOT NULL DEFAULT 0,
+                map_guid TEXT NOT NULL DEFAULT '',
+                start_time INTEGER NOT NULL DEFAULT 0,
+                game_time_sec INTEGER NOT NULL DEFAULT 0,
+                stat_map_json TEXT NOT NULL DEFAULT '{{}}',
+                last_update INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (match_id, player_bnet_id, hero_guid)
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {COMP_DATA_TABLE} (
+                match_id TEXT NOT NULL DEFAULT '',
+                player_bnet_id TEXT NOT NULL DEFAULT '',
+                hero_guid TEXT NOT NULL,
+                statmap_name TEXT NOT NULL,
+                statmap_value REAL NOT NULL,
+                statmap_raw_value REAL,
+                rank_score INTEGER,
+                rank_bucket INTEGER,
+                use_time_sec REAL NOT NULL DEFAULT 0,
+                use_time_rate REAL NOT NULL DEFAULT 0,
+                last_update INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        self._ensure_columns(
+            connection,
+            COMP_DATA_TABLE,
+            (
+                ("match_id", "match_id TEXT NOT NULL DEFAULT ''"),
+                ("player_bnet_id", "player_bnet_id TEXT NOT NULL DEFAULT ''"),
+                ("statmap_raw_value", "statmap_raw_value REAL"),
+                ("rank_bucket", "rank_bucket INTEGER"),
+                ("use_time_sec", "use_time_sec REAL NOT NULL DEFAULT 0"),
+                ("use_time_rate", "use_time_rate REAL NOT NULL DEFAULT 0"),
+            ),
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {HERO_PERK_PICK_TABLE} (
+                match_id TEXT NOT NULL,
+                player_bnet_id TEXT NOT NULL,
+                player_name TEXT NOT NULL DEFAULT '',
+                hero_guid TEXT NOT NULL,
+                perk_guid TEXT NOT NULL,
+                perk_level INTEGER NOT NULL DEFAULT 0,
+                slot_index INTEGER NOT NULL DEFAULT 0,
+                rank_score INTEGER,
+                rank_bucket INTEGER,
+                start_time INTEGER NOT NULL DEFAULT 0,
+                last_update INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (match_id, player_bnet_id, hero_guid, perk_level, slot_index, perk_guid)
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {COMP_DATA_SUMMARY_TABLE} (
+                hero_guid TEXT NOT NULL,
+                statmap_name TEXT NOT NULL,
+                rank_bucket_key INTEGER NOT NULL,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                avg_value REAL,
+                median_value REAL,
+                top20_value REAL,
+                top10_value REAL,
+                top5_value REAL,
+                top2_value REAL,
+                bottom20_value REAL,
+                bottom10_value REAL,
+                bottom5_value REAL,
+                bottom2_value REAL,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (hero_guid, statmap_name, rank_bucket_key)
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {HERO_PERK_SUMMARY_TABLE} (
+                hero_guid TEXT NOT NULL,
+                perk_level INTEGER NOT NULL,
+                perk_guid TEXT NOT NULL,
+                rank_bucket_key INTEGER NOT NULL,
+                pick_count INTEGER NOT NULL DEFAULT 0,
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                pick_rate REAL NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (hero_guid, perk_level, perk_guid, rank_bucket_key)
+            )
+            """
+        )
+        index_statements = (
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{COMP_DATA_TABLE}_uniq "
+            f"ON {COMP_DATA_TABLE} (match_id, player_bnet_id, hero_guid, statmap_name)",
+            f"CREATE INDEX IF NOT EXISTS idx_{COMP_DATA_TABLE}_hero_stat_rank_value "
+            f"ON {COMP_DATA_TABLE} (hero_guid, statmap_name, rank_bucket, statmap_value)",
+            f"CREATE INDEX IF NOT EXISTS idx_{COMP_DATA_TABLE}_match_player "
+            f"ON {COMP_DATA_TABLE} (match_id, player_bnet_id)",
+            f"CREATE INDEX IF NOT EXISTS idx_{HERO_MATCH_DETAIL_TABLE}_hero_rank_start "
+            f"ON {HERO_MATCH_DETAIL_TABLE} (hero_guid, rank_bucket, start_time)",
+            f"CREATE INDEX IF NOT EXISTS idx_{HERO_PERK_PICK_TABLE}_hero_level_rank_perk "
+            f"ON {HERO_PERK_PICK_TABLE} (hero_guid, perk_level, rank_bucket, perk_guid)",
+            f"CREATE INDEX IF NOT EXISTS idx_{HERO_PERK_PICK_TABLE}_match_player "
+            f"ON {HERO_PERK_PICK_TABLE} (match_id, player_bnet_id)",
+            f"CREATE INDEX IF NOT EXISTS idx_{COMP_DATA_SUMMARY_TABLE}_hero_rank "
+            f"ON {COMP_DATA_SUMMARY_TABLE} (hero_guid, rank_bucket_key, statmap_name)",
+            f"CREATE INDEX IF NOT EXISTS idx_{HERO_PERK_SUMMARY_TABLE}_hero_level_rank "
+            f"ON {HERO_PERK_SUMMARY_TABLE} (hero_guid, perk_level, rank_bucket_key, perk_guid)",
+        )
+        for statement in index_statements:
+            try:
+                connection.execute(statement)
+            except Exception as exc:
+                self._warn_once(f"match stats sqlite create index failed: {type(exc).__name__}: {exc}")
+
+    def initialize_match_detail_schema(self) -> bool:
+        with self._write_lock:
+            conn = self._get_write_connection()
+            if conn is None:
+                return False
+            try:
+                self._initialize_player_identity_table(conn)
+                self._initialize_match_detail_tables(conn)
+                conn.commit()
+                return True
+            except Exception as exc:
+                self._warn_once(f"match stats sqlite initialize schema failed: {type(exc).__name__}: {exc}")
+                return False
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def initialize_player_identity_schema(self) -> bool:
+        with self._write_lock:
+            conn = self._get_write_connection()
+            if conn is None:
+                return False
+            try:
+                self._initialize_player_identity_table(conn)
+                conn.commit()
+                return True
+            except Exception as exc:
+                self._warn_once(f"match stats sqlite initialize player identity schema failed: {type(exc).__name__}: {exc}")
+                return False
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     @staticmethod
     def _escape_like_pattern(text: str) -> str:
-        return str(text or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return str(text or "").replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
     @staticmethod
     def _summary_rows_to_dict(rows: List[Any]) -> Dict[Any, Dict[str, Any]]:
@@ -116,6 +318,24 @@ class IDPoolDB:
                 "bottom2": float(bottom2_value) if bottom2_value is not None else None,
             }
         return result
+
+    @staticmethod
+    def _perk_summary_rows_to_dict(rows: List[Any]) -> Dict[Any, Dict[str, Any]]:
+        grouped: Dict[Any, Dict[str, Any]] = {}
+        for row in rows or []:
+            hero_guid, perk_level, perk_guid, rank_bucket_key, pick_count, sample_count, pick_rate = row
+            result_key = None if int(rank_bucket_key) == OVERALL_RANK_BUCKET_KEY else int(rank_bucket_key)
+            bucket = grouped.setdefault(
+                result_key,
+                {"hero_guid": str(hero_guid), "perk_level": int(perk_level or 0), "sample_count": 0, "perks": {}},
+            )
+            bucket["sample_count"] = max(int(sample_count or 0), int(bucket.get("sample_count") or 0))
+            bucket["perks"][str(perk_guid)] = {
+                "pick_count": int(pick_count or 0),
+                "sample_count": int(sample_count or 0),
+                "pick_rate": float(pick_rate or 0.0),
+            }
+        return grouped
 
     def get_all_rank(self) -> List[Dict[str, Any]]:
         conn = self._get_connection()
@@ -207,75 +427,6 @@ class IDPoolDB:
             except Exception:
                 pass
 
-    def _get_statmap_summary_from_json(
-        self,
-        hero_guid: str,
-        statmap_names: List[str],
-        rank_scores: List[int],
-        ratio_statmap_names: List[str],
-        group_by_rank: bool = True,
-    ) -> Dict[str, Any]:
-        global _JSON_SUMMARY_CACHE
-        if _JSON_SUMMARY_CACHE is None:
-            with _JSON_SUMMARY_LOCK:
-                if _JSON_SUMMARY_CACHE is None:
-                    import json
-                    json_path = Path(__file__).resolve().parent.parent.parent / "res" / "match_stats_summary.json"
-                    if json_path.exists():
-                        try:
-                            with open(json_path, "r", encoding="utf-8") as f:
-                                _JSON_SUMMARY_CACHE = json.load(f)
-                        except Exception as e:
-                            print(f"[overstats] Failed to load json summary: {e}")
-                            _JSON_SUMMARY_CACHE = {}
-                    else:
-                        _JSON_SUMMARY_CACHE = {}
-
-        hero_data = _JSON_SUMMARY_CACHE.get(hero_guid)
-        if not hero_data:
-            return {}
-
-        result = {}
-        targets = statmap_names if statmap_names else list(hero_data.keys())
-        ratio_set = set(ratio_statmap_names)
-
-        for stat_name in targets:
-            stat_data = hero_data.get(stat_name)
-            if not stat_data:
-                continue
-
-            if group_by_rank:
-                keys = [str(r) for r in rank_scores] if rank_scores else list(stat_data.keys())
-            else:
-                keys = ["None"]
-
-            for r_key in keys:
-                metrics = stat_data.get(r_key)
-                if not metrics:
-                    continue
-                
-                rank_int = None if r_key == "None" else int(r_key)
-                is_ratio = stat_name in ratio_set
-                def adjust(val):
-                    if val is None:
-                        return None
-                    return max(0.0, min(1.0, float(val))) if is_ratio else float(val)
-
-                result[(stat_name, rank_int)] = {
-                    "count": int(metrics.get("count", 0)),
-                    "avg": adjust(metrics.get("avg")),
-                    "median": adjust(metrics.get("median")),
-                    "top20": adjust(metrics.get("top20")),
-                    "top10": adjust(metrics.get("top10")),
-                    "top5": adjust(metrics.get("top5")),
-                    "top2": adjust(metrics.get("top2")),
-                    "bottom20": adjust(metrics.get("bottom20")),
-                    "bottom10": adjust(metrics.get("bottom10")),
-                    "bottom5": adjust(metrics.get("bottom5")),
-                    "bottom2": adjust(metrics.get("bottom2")),
-                }
-        return result
-
     def get_statmap_summary(
         self,
         hero_guid: str,
@@ -294,13 +445,21 @@ class IDPoolDB:
 
         conn = self._get_connection()
         if conn is None:
-            return self._get_statmap_summary_from_json(
-                hero_guid,
-                statmap_names,
-                rank_scores,
-                ratio_statmap_names,
-                group_by_rank,
-            )
+            return {}
+
+        summary_rows = self._get_statmap_summary_preaggregated(
+            conn,
+            hero_guid=hero_guid,
+            statmap_names=statmap_names,
+            rank_scores=rank_scores,
+            group_by_rank=group_by_rank,
+        )
+        if summary_rows:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return summary_rows
 
         where_parts = ["hero_guid = ?"]
         params: List[Any] = [hero_guid]
@@ -329,7 +488,6 @@ class IDPoolDB:
         rank_select = "rank_score" if group_by_rank else "NULL AS rank_score"
         partition_by = "statmap_name, rank_score" if group_by_rank else "statmap_name"
 
-        db_result = {}
         try:
             cursor = conn.cursor()
             try:
@@ -384,10 +542,10 @@ class IDPoolDB:
                 rows = cursor.fetchall() or []
             finally:
                 cursor.close()
-            db_result = self._summary_rows_to_dict(list(rows))
+            return self._summary_rows_to_dict(list(rows))
         except Exception as exc:
             self._warn_once(f"match stats sqlite get_statmap_summary window query failed: {type(exc).__name__}: {exc}")
-            db_result = self._get_statmap_summary_python(
+            return self._get_statmap_summary_python(
                 conn,
                 where_sql=where_sql,
                 params=params,
@@ -400,15 +558,70 @@ class IDPoolDB:
             except Exception:
                 pass
 
-        if not db_result:
-            return self._get_statmap_summary_from_json(
-                hero_guid,
-                statmap_names,
-                rank_scores,
-                ratio_statmap_names,
-                group_by_rank,
-            )
-        return db_result
+    def _get_statmap_summary_preaggregated(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        hero_guid: str,
+        statmap_names: List[str],
+        rank_scores: List[int],
+        group_by_rank: bool,
+    ) -> Dict[str, Any]:
+        if not self._table_exists(conn, COMP_DATA_SUMMARY_TABLE):
+            return {}
+        where_parts = ["hero_guid = ?"]
+        params: List[Any] = [hero_guid]
+        if statmap_names:
+            placeholders = ",".join(["?"] * len(statmap_names))
+            where_parts.append(f"statmap_name IN ({placeholders})")
+            params.extend(statmap_names)
+
+        if group_by_rank:
+            if rank_scores:
+                placeholders = ",".join(["?"] * len(rank_scores))
+                where_parts.append(f"rank_bucket_key IN ({placeholders})")
+                params.extend(rank_scores)
+            else:
+                where_parts.append("rank_bucket_key != ?")
+                params.append(OVERALL_RANK_BUCKET_KEY)
+        else:
+            where_parts.append("rank_bucket_key = ?")
+            params.append(OVERALL_RANK_BUCKET_KEY)
+
+        try:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        statmap_name,
+                        CASE
+                            WHEN rank_bucket_key = ? THEN NULL
+                            ELSE rank_bucket_key
+                        END AS rank_score,
+                        sample_count,
+                        avg_value,
+                        median_value,
+                        top20_value,
+                        top10_value,
+                        top5_value,
+                        top2_value,
+                        bottom20_value,
+                        bottom10_value,
+                        bottom5_value,
+                        bottom2_value
+                    FROM {COMP_DATA_SUMMARY_TABLE}
+                    WHERE {" AND ".join(where_parts)}
+                    """,
+                    (OVERALL_RANK_BUCKET_KEY, *params),
+                )
+                rows = cursor.fetchall() or []
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self._warn_once(f"match stats sqlite preaggregated statmap summary failed: {type(exc).__name__}: {exc}")
+            return {}
+        return self._summary_rows_to_dict(list(rows))
 
     def _get_statmap_summary_python(
         self,
@@ -476,13 +689,652 @@ class IDPoolDB:
             }
         return result
 
+    def get_perk_pick_summary(
+        self,
+        hero_guid: str,
+        perk_level: int,
+        rank_scores: Optional[List[int]] = None,
+        include_overall: bool = True,
+    ) -> Dict[Any, Dict[str, Any]]:
+        hero_guid = str(hero_guid or "").strip()
+        if not hero_guid:
+            return {}
+        normalized_perk_level = max(0, int(perk_level or 0))
+        normalized_ranks = [int(item) for item in (rank_scores or [])]
+
+        conn = self._get_connection()
+        if conn is None:
+            return {}
+        try:
+            if self._table_exists(conn, HERO_PERK_SUMMARY_TABLE):
+                where_parts = ["hero_guid = ?", "perk_level = ?"]
+                params: List[Any] = [hero_guid, normalized_perk_level]
+                rank_filters: List[int] = []
+                if include_overall:
+                    rank_filters.append(OVERALL_RANK_BUCKET_KEY)
+                rank_filters.extend(normalized_ranks)
+                if rank_filters:
+                    placeholders = ",".join(["?"] * len(rank_filters))
+                    where_parts.append(f"rank_bucket_key IN ({placeholders})")
+                    params.extend(rank_filters)
+                elif not include_overall:
+                    where_parts.append("rank_bucket_key != ?")
+                    params.append(OVERALL_RANK_BUCKET_KEY)
+
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            hero_guid,
+                            perk_level,
+                            perk_guid,
+                            rank_bucket_key,
+                            pick_count,
+                            sample_count,
+                            pick_rate
+                        FROM {HERO_PERK_SUMMARY_TABLE}
+                        WHERE {" AND ".join(where_parts)}
+                        ORDER BY rank_bucket_key ASC, pick_count DESC, perk_guid ASC
+                        """,
+                        tuple(params),
+                    )
+                    rows = cursor.fetchall() or []
+                finally:
+                    cursor.close()
+                if rows:
+                    return self._perk_summary_rows_to_dict(list(rows))
+        except Exception as exc:
+            self._warn_once(f"match stats sqlite get_perk_pick_summary failed: {type(exc).__name__}: {exc}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return {}
+
+    def get_perk_pick_summary_from_raw(
+        self,
+        hero_guid: str,
+        perk_level: int,
+        rank_scores: Optional[List[int]] = None,
+        include_overall: bool = True,
+    ) -> Dict[Any, Dict[str, Any]]:
+        hero_guid = str(hero_guid or "").strip()
+        if not hero_guid:
+            return {}
+        normalized_perk_level = max(0, int(perk_level or 0))
+        normalized_ranks = [int(item) for item in (rank_scores or [])]
+
+        conn = self._get_connection()
+        if conn is None:
+            return {}
+        try:
+            if not self._table_exists(conn, HERO_PERK_PICK_TABLE):
+                return {}
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT
+                        perk_guid,
+                        rank_bucket,
+                        match_id,
+                        player_bnet_id
+                    FROM {HERO_PERK_PICK_TABLE}
+                    WHERE hero_guid = ? AND perk_level = ?
+                    ORDER BY rank_bucket ASC, perk_guid ASC
+                    """,
+                    (hero_guid, normalized_perk_level),
+                )
+                rows = cursor.fetchall() or []
+            finally:
+                cursor.close()
+        except Exception as exc:
+            self._warn_once(
+                f"match stats sqlite get_perk_pick_summary_from_raw failed: {type(exc).__name__}: {exc}"
+            )
+            return {}
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        if not rows:
+            return {}
+
+        overall_samples: set[tuple[str, str]] = set()
+        overall_counts: Counter[str] = Counter()
+        rank_samples: Dict[int, set[tuple[str, str]]] = {}
+        rank_counts: Dict[int, Counter[str]] = {}
+        for perk_guid, rank_bucket, match_id, player_bnet_id in rows:
+            normalized_perk_guid = str(perk_guid or "").strip()
+            normalized_match_id = str(match_id or "").strip()
+            normalized_player_id = str(player_bnet_id or "").strip()
+            if not normalized_perk_guid or not normalized_match_id or not normalized_player_id:
+                continue
+            sample_key = (normalized_match_id, normalized_player_id)
+            overall_samples.add(sample_key)
+            overall_counts[normalized_perk_guid] += 1
+            if rank_bucket is None:
+                continue
+            normalized_rank_bucket = int(rank_bucket)
+            rank_samples.setdefault(normalized_rank_bucket, set()).add(sample_key)
+            rank_counts.setdefault(normalized_rank_bucket, Counter())[normalized_perk_guid] += 1
+
+        result: Dict[Any, Dict[str, Any]] = {}
+        overall_sample_count = len(overall_samples)
+        if include_overall and overall_sample_count > 0:
+            result[None] = {
+                "hero_guid": hero_guid,
+                "perk_level": normalized_perk_level,
+                "sample_count": overall_sample_count,
+                "perks": {
+                    perk_guid: {
+                        "pick_count": int(pick_count),
+                        "sample_count": overall_sample_count,
+                        "pick_rate": float(pick_count / overall_sample_count),
+                    }
+                    for perk_guid, pick_count in overall_counts.items()
+                },
+            }
+
+        if normalized_ranks:
+            selected_ranks = list(dict.fromkeys(normalized_ranks))
+        else:
+            selected_ranks = sorted(rank_counts)
+
+        for rank_bucket in selected_ranks:
+            sample_count = len(rank_samples.get(rank_bucket) or ())
+            if sample_count <= 0:
+                continue
+            counter = rank_counts.get(rank_bucket) or Counter()
+            result[int(rank_bucket)] = {
+                "hero_guid": hero_guid,
+                "perk_level": normalized_perk_level,
+                "sample_count": sample_count,
+                "perks": {
+                    perk_guid: {
+                        "pick_count": int(pick_count),
+                        "sample_count": sample_count,
+                        "pick_rate": float(pick_count / sample_count),
+                    }
+                    for perk_guid, pick_count in counter.items()
+                },
+            }
+        return result
+
+    def _expand_comp_summary_keys(
+        self,
+        keys: Iterable[tuple[str, str, Optional[int]]],
+    ) -> List[tuple[str, str, int]]:
+        expanded: set[tuple[str, str, int]] = set()
+        for hero_guid, statmap_name, rank_bucket in keys or []:
+            normalized_hero_guid = str(hero_guid or "").strip()
+            normalized_statmap_name = str(statmap_name or "").strip()
+            if not normalized_hero_guid or not normalized_statmap_name:
+                continue
+            expanded.add((normalized_hero_guid, normalized_statmap_name, OVERALL_RANK_BUCKET_KEY))
+            if rank_bucket is not None:
+                expanded.add((normalized_hero_guid, normalized_statmap_name, int(rank_bucket)))
+        return sorted(expanded)
+
+    def _expand_perk_summary_keys(
+        self,
+        keys: Iterable[tuple[str, int, Optional[int]]],
+    ) -> List[tuple[str, int, int]]:
+        expanded: set[tuple[str, int, int]] = set()
+        for hero_guid, perk_level, rank_bucket in keys or []:
+            normalized_hero_guid = str(hero_guid or "").strip()
+            normalized_perk_level = int(perk_level or 0)
+            if not normalized_hero_guid or normalized_perk_level <= 0:
+                continue
+            expanded.add((normalized_hero_guid, normalized_perk_level, OVERALL_RANK_BUCKET_KEY))
+            if rank_bucket is not None:
+                expanded.add((normalized_hero_guid, normalized_perk_level, int(rank_bucket)))
+        return sorted(expanded)
+
+    def _refresh_comp_data_summaries(
+        self,
+        conn: sqlite3.Connection,
+        summary_keys: Iterable[tuple[str, str, Optional[int]]],
+        *,
+        updated_at: int,
+    ) -> None:
+        expanded_keys = self._expand_comp_summary_keys(summary_keys)
+        if not expanded_keys:
+            return
+        conn.execute("DROP TABLE IF EXISTS temp_comp_summary_key")
+        conn.execute(
+            """
+            CREATE TEMP TABLE temp_comp_summary_key (
+                hero_guid TEXT NOT NULL,
+                statmap_name TEXT NOT NULL,
+                rank_bucket_key INTEGER NOT NULL,
+                PRIMARY KEY (hero_guid, statmap_name, rank_bucket_key)
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO temp_comp_summary_key (
+                hero_guid,
+                statmap_name,
+                rank_bucket_key
+            ) VALUES (?, ?, ?)
+            """,
+            expanded_keys,
+        )
+        rows = conn.execute(
+            f"""
+            WITH filtered AS (
+                SELECT
+                    temp.hero_guid,
+                    temp.statmap_name,
+                    temp.rank_bucket_key,
+                    comp.statmap_value
+                FROM temp_comp_summary_key AS temp
+                JOIN {COMP_DATA_TABLE} AS comp
+                    ON comp.hero_guid = temp.hero_guid
+                    AND comp.statmap_name = temp.statmap_name
+                    AND (
+                        temp.rank_bucket_key = {OVERALL_RANK_BUCKET_KEY}
+                        OR comp.rank_bucket = temp.rank_bucket_key
+                    )
+            ),
+            ranked AS (
+                SELECT
+                    hero_guid,
+                    statmap_name,
+                    rank_bucket_key,
+                    statmap_value,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY hero_guid, statmap_name, rank_bucket_key
+                        ORDER BY statmap_value
+                    ) AS rn,
+                    COUNT(*) OVER (
+                        PARTITION BY hero_guid, statmap_name, rank_bucket_key
+                    ) AS cnt
+                FROM filtered
+            )
+            SELECT
+                hero_guid,
+                statmap_name,
+                rank_bucket_key,
+                MAX(cnt) AS sample_count,
+                AVG(statmap_value) AS avg_value,
+                AVG(
+                    CASE
+                        WHEN rn IN (
+                            CAST((cnt + 1) / 2 AS INTEGER),
+                            CAST((cnt + 2) / 2 AS INTEGER)
+                        )
+                        THEN statmap_value
+                    END
+                ) AS median_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 80) + 99) / 100 AS INTEGER) THEN statmap_value END) AS top20_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 90) + 99) / 100 AS INTEGER) THEN statmap_value END) AS top10_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 95) + 99) / 100 AS INTEGER) THEN statmap_value END) AS top5_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 98) + 99) / 100 AS INTEGER) THEN statmap_value END) AS top2_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 20) + 99) / 100 AS INTEGER) THEN statmap_value END) AS bottom20_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 10) + 99) / 100 AS INTEGER) THEN statmap_value END) AS bottom10_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 5) + 99) / 100 AS INTEGER) THEN statmap_value END) AS bottom5_value,
+                MIN(CASE WHEN rn >= CAST(((cnt * 2) + 99) / 100 AS INTEGER) THEN statmap_value END) AS bottom2_value
+            FROM ranked
+            GROUP BY hero_guid, statmap_name, rank_bucket_key
+            """
+        ).fetchall()
+        conn.executemany(
+            f"""
+            INSERT INTO {COMP_DATA_SUMMARY_TABLE} (
+                hero_guid,
+                statmap_name,
+                rank_bucket_key,
+                sample_count,
+                avg_value,
+                median_value,
+                top20_value,
+                top10_value,
+                top5_value,
+                top2_value,
+                bottom20_value,
+                bottom10_value,
+                bottom5_value,
+                bottom2_value,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hero_guid, statmap_name, rank_bucket_key) DO UPDATE SET
+                sample_count = excluded.sample_count,
+                avg_value = excluded.avg_value,
+                median_value = excluded.median_value,
+                top20_value = excluded.top20_value,
+                top10_value = excluded.top10_value,
+                top5_value = excluded.top5_value,
+                top2_value = excluded.top2_value,
+                bottom20_value = excluded.bottom20_value,
+                bottom10_value = excluded.bottom10_value,
+                bottom5_value = excluded.bottom5_value,
+                bottom2_value = excluded.bottom2_value,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    row[0],
+                    row[1],
+                    int(row[2]),
+                    int(row[3] or 0),
+                    row[4],
+                    row[5],
+                    row[6],
+                    row[7],
+                    row[8],
+                    row[9],
+                    row[10],
+                    row[11],
+                    row[12],
+                    row[13],
+                    int(updated_at),
+                )
+                for row in rows
+            ],
+        )
+        conn.execute("DROP TABLE IF EXISTS temp_comp_summary_key")
+
+    def _refresh_hero_perk_summaries(
+        self,
+        conn: sqlite3.Connection,
+        summary_keys: Iterable[tuple[str, int, Optional[int]]],
+        *,
+        updated_at: int,
+    ) -> None:
+        expanded_keys = self._expand_perk_summary_keys(summary_keys)
+        if not expanded_keys:
+            return
+        conn.execute("DROP TABLE IF EXISTS temp_perk_summary_key")
+        conn.execute(
+            """
+            CREATE TEMP TABLE temp_perk_summary_key (
+                hero_guid TEXT NOT NULL,
+                perk_level INTEGER NOT NULL,
+                rank_bucket_key INTEGER NOT NULL,
+                PRIMARY KEY (hero_guid, perk_level, rank_bucket_key)
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO temp_perk_summary_key (
+                hero_guid,
+                perk_level,
+                rank_bucket_key
+            ) VALUES (?, ?, ?)
+            """,
+            expanded_keys,
+        )
+        rows = conn.execute(
+            f"""
+            WITH sample_source AS (
+                SELECT
+                    temp.hero_guid,
+                    temp.perk_level,
+                    temp.rank_bucket_key,
+                    pick.match_id,
+                    pick.player_bnet_id,
+                    pick.hero_guid AS sample_hero_guid
+                FROM temp_perk_summary_key AS temp
+                JOIN {HERO_PERK_PICK_TABLE} AS pick
+                    ON pick.hero_guid = temp.hero_guid
+                    AND pick.perk_level = temp.perk_level
+                    AND (
+                        temp.rank_bucket_key = {OVERALL_RANK_BUCKET_KEY}
+                        OR pick.rank_bucket = temp.rank_bucket_key
+                    )
+                GROUP BY
+                    temp.hero_guid,
+                    temp.perk_level,
+                    temp.rank_bucket_key,
+                    pick.match_id,
+                    pick.player_bnet_id,
+                    pick.hero_guid
+            ),
+            sample_counts AS (
+                SELECT
+                    hero_guid,
+                    perk_level,
+                    rank_bucket_key,
+                    COUNT(*) AS sample_count
+                FROM sample_source
+                GROUP BY hero_guid, perk_level, rank_bucket_key
+            ),
+            pick_counts AS (
+                SELECT
+                    temp.hero_guid,
+                    temp.perk_level,
+                    pick.perk_guid,
+                    temp.rank_bucket_key,
+                    COUNT(*) AS pick_count
+                FROM temp_perk_summary_key AS temp
+                JOIN {HERO_PERK_PICK_TABLE} AS pick
+                    ON pick.hero_guid = temp.hero_guid
+                    AND pick.perk_level = temp.perk_level
+                    AND (
+                        temp.rank_bucket_key = {OVERALL_RANK_BUCKET_KEY}
+                        OR pick.rank_bucket = temp.rank_bucket_key
+                    )
+                GROUP BY
+                    temp.hero_guid,
+                    temp.perk_level,
+                    pick.perk_guid,
+                    temp.rank_bucket_key
+            )
+            SELECT
+                pick_counts.hero_guid,
+                pick_counts.perk_level,
+                pick_counts.perk_guid,
+                pick_counts.rank_bucket_key,
+                pick_counts.pick_count,
+                sample_counts.sample_count,
+                CASE
+                    WHEN sample_counts.sample_count > 0
+                    THEN CAST(pick_counts.pick_count AS REAL) / CAST(sample_counts.sample_count AS REAL)
+                    ELSE 0
+                END AS pick_rate
+            FROM pick_counts
+            JOIN sample_counts
+                ON sample_counts.hero_guid = pick_counts.hero_guid
+                AND sample_counts.perk_level = pick_counts.perk_level
+                AND sample_counts.rank_bucket_key = pick_counts.rank_bucket_key
+            """
+        ).fetchall()
+        conn.executemany(
+            f"""
+            INSERT INTO {HERO_PERK_SUMMARY_TABLE} (
+                hero_guid,
+                perk_level,
+                perk_guid,
+                rank_bucket_key,
+                pick_count,
+                sample_count,
+                pick_rate,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(hero_guid, perk_level, perk_guid, rank_bucket_key) DO UPDATE SET
+                pick_count = excluded.pick_count,
+                sample_count = excluded.sample_count,
+                pick_rate = excluded.pick_rate,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    row[0],
+                    int(row[1] or 0),
+                    row[2],
+                    int(row[3]),
+                    int(row[4] or 0),
+                    int(row[5] or 0),
+                    float(row[6] or 0.0),
+                    int(updated_at),
+                )
+                for row in rows
+            ],
+        )
+        conn.execute("DROP TABLE IF EXISTS temp_perk_summary_key")
+
+    def write_match_detail_batch(
+        self,
+        *,
+        hero_detail_rows: Sequence[Dict[str, Any]],
+        comp_data_rows: Sequence[Dict[str, Any]],
+        perk_pick_rows: Sequence[Dict[str, Any]],
+        comp_summary_keys: Iterable[tuple[str, str, Optional[int]]],
+        perk_summary_keys: Iterable[tuple[str, int, Optional[int]]],
+    ) -> Dict[str, int]:
+        if not hero_detail_rows and not comp_data_rows and not perk_pick_rows:
+            return {"hero_details": 0, "comp_data": 0, "perk_picks": 0}
+
+        with self._write_lock:
+            conn = self._get_write_connection()
+            if conn is None:
+                return {"hero_details": 0, "comp_data": 0, "perk_picks": 0}
+            try:
+                self._initialize_player_identity_table(conn)
+                self._initialize_match_detail_tables(conn)
+
+                if hero_detail_rows:
+                    conn.executemany(
+                        f"""
+                        INSERT OR IGNORE INTO {HERO_MATCH_DETAIL_TABLE} (
+                            match_id,
+                            player_bnet_id,
+                            player_name,
+                            hero_guid,
+                            rank_score,
+                            rank_bucket,
+                            use_time_sec,
+                            use_time_rate,
+                            map_guid,
+                            start_time,
+                            game_time_sec,
+                            stat_map_json,
+                            last_update
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                str(row.get("match_id") or ""),
+                                str(row.get("player_bnet_id") or ""),
+                                str(row.get("player_name") or ""),
+                                str(row.get("hero_guid") or ""),
+                                row.get("rank_score"),
+                                row.get("rank_bucket"),
+                                float(row.get("use_time_sec") or 0.0),
+                                float(row.get("use_time_rate") or 0.0),
+                                str(row.get("map_guid") or ""),
+                                int(row.get("start_time") or 0),
+                                int(row.get("game_time_sec") or 0),
+                                str(row.get("stat_map_json") or "{}"),
+                                int(row.get("last_update") or 0),
+                            )
+                            for row in hero_detail_rows
+                        ],
+                    )
+
+                if comp_data_rows:
+                    conn.executemany(
+                        f"""
+                        INSERT OR IGNORE INTO {COMP_DATA_TABLE} (
+                            match_id,
+                            player_bnet_id,
+                            hero_guid,
+                            statmap_name,
+                            statmap_value,
+                            statmap_raw_value,
+                            rank_score,
+                            rank_bucket,
+                            use_time_sec,
+                            use_time_rate,
+                            last_update
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                str(row.get("match_id") or ""),
+                                str(row.get("player_bnet_id") or ""),
+                                str(row.get("hero_guid") or ""),
+                                str(row.get("statmap_name") or ""),
+                                float(row.get("statmap_value") or 0.0),
+                                float(row.get("statmap_raw_value") or 0.0),
+                                row.get("rank_score"),
+                                row.get("rank_bucket"),
+                                float(row.get("use_time_sec") or 0.0),
+                                float(row.get("use_time_rate") or 0.0),
+                                int(row.get("last_update") or 0),
+                            )
+                            for row in comp_data_rows
+                        ],
+                    )
+
+                if perk_pick_rows:
+                    conn.executemany(
+                        f"""
+                        INSERT OR IGNORE INTO {HERO_PERK_PICK_TABLE} (
+                            match_id,
+                            player_bnet_id,
+                            player_name,
+                            hero_guid,
+                            perk_guid,
+                            perk_level,
+                            slot_index,
+                            rank_score,
+                            rank_bucket,
+                            start_time,
+                            last_update
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                str(row.get("match_id") or ""),
+                                str(row.get("player_bnet_id") or ""),
+                                str(row.get("player_name") or ""),
+                                str(row.get("hero_guid") or ""),
+                                str(row.get("perk_guid") or ""),
+                                int(row.get("perk_level") or 0),
+                                int(row.get("slot_index") or 0),
+                                row.get("rank_score"),
+                                row.get("rank_bucket"),
+                                int(row.get("start_time") or 0),
+                                int(row.get("last_update") or 0),
+                            )
+                            for row in perk_pick_rows
+                        ],
+                    )
+
+                refresh_ts = int(time.time())
+                self._refresh_comp_data_summaries(conn, comp_summary_keys, updated_at=refresh_ts)
+                self._refresh_hero_perk_summaries(conn, perk_summary_keys, updated_at=refresh_ts)
+                conn.commit()
+                return {
+                    "hero_details": len(hero_detail_rows),
+                    "comp_data": len(comp_data_rows),
+                    "perk_picks": len(perk_pick_rows),
+                }
+            except Exception as exc:
+                self._warn_once(f"match stats sqlite write_match_detail_batch failed: {type(exc).__name__}: {exc}")
+                return {"hero_details": 0, "comp_data": 0, "perk_picks": 0}
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     def upsert_player_identity_records(self, rows: Iterable[Dict[str, Any]]) -> int:
         normalized_rows: Dict[str, tuple[str, str, str, str, int]] = {}
         for row in rows or []:
             if not isinstance(row, dict):
                 continue
             bnetid = str(row.get("bnetid") or row.get("bnetId") or row.get("bnet_id") or "").strip()
-            battletag = str(row.get("battletag") or row.get("battleTag") or "").replace("\uff03", "#").strip()
+            battletag = str(row.get("battletag") or row.get("battleTag") or "").replace("＃", "#").strip()
             battlename = str(row.get("battlename") or row.get("battleName") or "").strip()
             battlenum = str(row.get("battlenum") or row.get("battleNum") or "").strip()
             if not battletag and battlename:
@@ -564,7 +1416,6 @@ class IDPoolDB:
         contains_pattern = f"%{escaped_bnet_id}%"
 
         try:
-            self._initialize_player_identity_table(conn)
             cursor = conn.cursor()
             try:
                 if exact_only:
@@ -595,18 +1446,18 @@ class IDPoolDB:
                             update_time,
                             CASE
                                 WHEN bnetid = ? THEN 'exact'
-                                WHEN bnetid LIKE ? ESCAPE '\' THEN 'prefix'
+                                WHEN bnetid LIKE ? ESCAPE '!' THEN 'prefix'
                                 ELSE 'contains'
                             END AS match_type
                         FROM {PLAYER_IDENTITY_TABLE}
                         WHERE
                             bnetid = ?
-                            OR bnetid LIKE ? ESCAPE '\'
-                            OR bnetid LIKE ? ESCAPE '\'
+                            OR bnetid LIKE ? ESCAPE '!'
+                            OR bnetid LIKE ? ESCAPE '!'
                         ORDER BY
                             CASE
                                 WHEN bnetid = ? THEN 0
-                                WHEN bnetid LIKE ? ESCAPE '\' THEN 1
+                                WHEN bnetid LIKE ? ESCAPE '!' THEN 1
                                 ELSE 2
                             END ASC,
                             update_time DESC,
@@ -653,10 +1504,10 @@ class IDPoolDB:
         battletag: str,
         *,
         limit: int = 10,
-        exact_only: bool = True,
+        exact_only: bool = False,
     ) -> List[Dict[str, Any]]:
-        normalized = str(battletag or "").replace("\uff03", "#").strip()
-        if not normalized:
+        normalized_battletag = str(battletag or "").replace("＃", "#").strip()
+        if not normalized_battletag:
             return []
 
         try:
@@ -668,12 +1519,13 @@ class IDPoolDB:
         if conn is None:
             return []
 
-        escaped = self._escape_like_pattern(normalized)
-        contains_pattern = f"%{escaped}%"
+        escaped_battletag = self._escape_like_pattern(normalized_battletag)
+        prefix_pattern = f"{escaped_battletag}%"
+        contains_pattern = f"%{escaped_battletag}%"
 
         try:
-            self._initialize_player_identity_table(conn)
             cursor = conn.cursor()
+            self._initialize_player_identity_table(conn)
             try:
                 if exact_only:
                     cursor.execute(
@@ -686,11 +1538,11 @@ class IDPoolDB:
                             update_time,
                             'exact' AS match_type
                         FROM {PLAYER_IDENTITY_TABLE}
-                        WHERE lower(battletag) = lower(?)
+                        WHERE battletag = ?
                         ORDER BY update_time DESC, bnetid ASC
                         LIMIT ?
                         """,
-                        (normalized, normalized_limit),
+                        (normalized_battletag, normalized_limit),
                     )
                 else:
                     cursor.execute(
@@ -702,20 +1554,35 @@ class IDPoolDB:
                             battlenum,
                             update_time,
                             CASE
-                                WHEN lower(battletag) = lower(?) THEN 'exact'
+                                WHEN battletag = ? THEN 'exact'
+                                WHEN battletag LIKE ? ESCAPE '!' THEN 'prefix'
                                 ELSE 'contains'
                             END AS match_type
                         FROM {PLAYER_IDENTITY_TABLE}
                         WHERE
-                            lower(battletag) = lower(?)
-                            OR battletag LIKE ? ESCAPE '\'
+                            battletag = ?
+                            OR battletag LIKE ? ESCAPE '!'
+                            OR battletag LIKE ? ESCAPE '!'
                         ORDER BY
-                            CASE WHEN lower(battletag) = lower(?) THEN 0 ELSE 1 END ASC,
+                            CASE
+                                WHEN battletag = ? THEN 0
+                                WHEN battletag LIKE ? ESCAPE '!' THEN 1
+                                ELSE 2
+                            END ASC,
                             update_time DESC,
                             bnetid ASC
                         LIMIT ?
                         """,
-                        (normalized, normalized, contains_pattern, normalized, normalized_limit),
+                        (
+                            normalized_battletag,
+                            prefix_pattern,
+                            normalized_battletag,
+                            prefix_pattern,
+                            contains_pattern,
+                            normalized_battletag,
+                            prefix_pattern,
+                            normalized_limit,
+                        ),
                     )
                 rows = cursor.fetchall() or []
             finally:
@@ -760,4 +1627,14 @@ class IDPoolDB:
 
         return _noop
 
-__all__ = ["IDPoolDB", "MATCH_STATS_DB_PATH", "PLAYER_IDENTITY_TABLE"]
+__all__ = [
+    "COMP_DATA_SUMMARY_TABLE",
+    "COMP_DATA_TABLE",
+    "HERO_MATCH_DETAIL_TABLE",
+    "HERO_PERK_PICK_TABLE",
+    "HERO_PERK_SUMMARY_TABLE",
+    "IDPoolDB",
+    "MATCH_STATS_DB_PATH",
+    "OVERALL_RANK_BUCKET_KEY",
+    "PLAYER_IDENTITY_TABLE",
+]

@@ -4,7 +4,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
-import logging
 import mimetypes
 import os
 from pathlib import Path
@@ -15,21 +14,21 @@ from urllib.parse import urlparse
 
 import httpx
 
-logger = logging.getLogger("astrbot")
+try:
+    from overstats.paths import get_overstats_data_dir
+    from overstats.src.modules.season_config import normalize_query_tool_config
+except ModuleNotFoundError:
+    from paths import get_overstats_data_dir
+    from src.modules.season_config import normalize_query_tool_config
 
 from .requests import MANUAL_KEYS, REMOTE_HEADERS, QueryToolRequests
 
-try:
-    from overstats.paths import ensure_dir, get_overstats_data_dir
-    from overstats.src.modules.season_config import normalize_query_tool_config
-except ModuleNotFoundError:
-    from paths import ensure_dir, get_overstats_data_dir
-    from src.modules.season_config import normalize_query_tool_config
 
-
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_QUERY_TOOL_PATH = PROJECT_ROOT / "overstats" / "res" / "query_tool.json"
 OVERSTATS_DATA_DIR = get_overstats_data_dir()
 QUERY_TOOL_PATH = OVERSTATS_DATA_DIR / "query_tool.json"
-QUERY_TOOL_ASSET_DIR = ensure_dir(OVERSTATS_DATA_DIR / "query_tool_assets")
+QUERY_TOOL_ASSET_DIR = OVERSTATS_DATA_DIR / "query_tool_assets"
 QUERY_TOOL_ASSET_MANIFEST_PATH = QUERY_TOOL_ASSET_DIR / "assets_manifest.json"
 IMAGE_URL_KEYS = ("icon", "image", "avatar", "portrait", "background", "smallIconUrl", "ddHeroIcon")
 ASSET_SECTION_DIRS = {
@@ -39,7 +38,6 @@ ASSET_SECTION_DIRS = {
     "modTrait": "perk",
 }
 DEFAULT_ASSET_DOWNLOAD_WORKERS = 12
-ASSET_PROGRESS_LOG_ENABLED = os.getenv("OVERSTATS_QUERY_TOOL_ASSET_PROGRESS", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 _CONFIG_LOCK = threading.Lock()
 _CONFIG_UPDATED = False
@@ -82,7 +80,7 @@ def get_asset_download_workers() -> int:
     try:
         return max(1, int(raw_value))
     except ValueError:
-        logger.debug(
+        print(
             "[overstats] invalid OVERSTATS_QUERY_TOOL_ASSET_WORKERS="
             f"{raw_value!r}, fallback to {DEFAULT_ASSET_DOWNLOAD_WORKERS}"
         )
@@ -92,13 +90,16 @@ def get_asset_download_workers() -> int:
 def read_query_tool(default: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if default is None:
         default = {}
-    if not QUERY_TOOL_PATH.exists():
+    path = QUERY_TOOL_PATH if QUERY_TOOL_PATH.exists() else DEFAULT_QUERY_TOOL_PATH
+    if not path.exists():
         return normalize_query_tool_config(default)
     try:
-        data = json.loads(QUERY_TOOL_PATH.read_text(encoding="utf-8"))
-        return normalize_query_tool_config(data if isinstance(data, dict) else default)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return normalize_query_tool_config(data)
+        return normalize_query_tool_config(default)
     except Exception as exc:
-        logger.debug(f"[overstats] failed to read query tool config {QUERY_TOOL_PATH}: {exc}")
+        print(f"[overstats] failed to read query tool config {path}: {exc}")
     return normalize_query_tool_config(default)
 
 
@@ -134,6 +135,33 @@ def get_cached_asset_path(url: str, category: str = "misc") -> Optional[Path]:
     return None
 
 
+def cache_query_tool_asset_bytes(url: str, data: bytes, category: str = "misc") -> Optional[Path]:
+    normalized = _normalize_url(url)
+    if not normalized or not data:
+        return None
+
+    existing_path = get_cached_asset_path(normalized, category)
+    if existing_path is not None and existing_path.exists():
+        return existing_path
+
+    folder = QUERY_TOOL_ASSET_DIR / (category or "misc")
+    folder.mkdir(parents=True, exist_ok=True)
+    extension = _guess_asset_extension(normalized, "")
+    target_path = folder / f"{_asset_hash(normalized)}{extension}"
+    fd, temp_path = tempfile.mkstemp(prefix=f"{target_path.stem}.", suffix=".tmp", dir=str(folder))
+    try:
+        with os.fdopen(fd, "wb") as file:
+            file.write(data)
+        Path(temp_path).replace(target_path)
+        return target_path
+    except Exception:
+        try:
+            Path(temp_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
 def ensure_query_tool_assets(config: Dict[str, Any] | None = None) -> Dict[str, Any]:
     config = config or read_query_tool(default={})
     assets = list(_iter_unique_asset_urls(config))
@@ -147,7 +175,7 @@ def ensure_query_tool_assets(config: Dict[str, Any] | None = None) -> Dict[str, 
     failed = 0
     total = len(assets)
     if total:
-        logger.debug(f"[overstats] query_tool asset check started: total={total} workers={configured_workers}")
+        print(f"[overstats] query_tool asset check started: total={total} workers={configured_workers}")
         _print_asset_progress(0, total, cached, downloaded, failed, "start")
 
     pending = []
@@ -193,21 +221,17 @@ def ensure_query_tool_assets(config: Dict[str, Any] | None = None) -> Dict[str, 
                         "category": category,
                         "error": f"{type(exc).__name__}: {exc}",
                     }
-                    logger.debug(f"[overstats] failed to download query_tool asset {url}: {exc}")
+                    print()
+                    print(f"[overstats] failed to download query_tool asset {url}: {exc}")
                 _print_asset_progress(checked, total, cached, downloaded, failed, status)
 
     _write_asset_manifest(manifest)
     if total:
-        logger.debug(
+        print()
+        print(
             "[overstats] query_tool asset check finished: "
             f"checked={checked} cached={cached} downloaded={downloaded} failed={failed}"
         )
-        if failed:
-            logger.warning(
-                "[ow_dashen] 素材缓存检查完成，但有资源下载失败："
-                f"总数={total}，已缓存={cached}，新下载={downloaded}，失败={failed}。"
-                "部分图片可能缺少英雄头像或地图图。"
-            )
     return {
         "checked": checked,
         "cached": cached,
@@ -227,6 +251,7 @@ class QueryToolModule:
         self.requests = requests or QueryToolRequests()
 
     def load(self, *, force_refresh: bool = False) -> Dict[str, Any]:
+        global _CONFIG_CACHE
         if force_refresh:
             return self.refresh(force=True)
         if _CONFIG_CACHE is not None:
@@ -255,7 +280,7 @@ class QueryToolModule:
             try:
                 write_query_tool(merged_config)
             except Exception as exc:
-                logger.debug(f"[overstats] failed to write {QUERY_TOOL_PATH}: {exc}")
+                print(f"[overstats] failed to write {QUERY_TOOL_PATH}: {exc}")
 
             _CONFIG_CACHE = merged_config
             _CONFIG_UPDATED = True
@@ -376,14 +401,15 @@ def _print_asset_progress(
 ) -> None:
     if total <= 0:
         return
-    if not ASSET_PROGRESS_LOG_ENABLED:
-        return
     width = 28
     ratio = min(max(current / total, 0), 1)
     filled = int(width * ratio)
     bar = "#" * filled + "-" * (width - filled)
     percent = ratio * 100
-    logger.debug(
+    print(
+        "\r"
         f"[overstats] assets [{bar}] {current}/{total} {percent:5.1f}% "
-        f"cached={cached} downloaded={downloaded} failed={failed} last={status}"
+        f"cached={cached} downloaded={downloaded} failed={failed} last={status}",
+        end="",
+        flush=True,
     )

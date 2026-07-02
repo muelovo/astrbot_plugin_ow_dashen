@@ -4,19 +4,18 @@ import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 import datetime as dt
-import logging
 from typing import Callable, Dict, Optional
-from zoneinfo import ZoneInfo
-
-logger = logging.getLogger("astrbot")
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
+    from overstats.config import is_database_write_enabled
     from overstats.src.db import (
         HERO_LEADERBOARD_CN_TABLE,
         HERO_LEADERBOARD_GLOBAL_TABLE,
         OWHeroLeaderboardDB,
     )
 except ModuleNotFoundError:
+    from config import is_database_write_enabled
     from src.db import (
         HERO_LEADERBOARD_CN_TABLE,
         HERO_LEADERBOARD_GLOBAL_TABLE,
@@ -26,7 +25,15 @@ except ModuleNotFoundError:
 from .requests import OWHeroLeaderboardRequests
 
 
-BEIJING_TIMEZONE = ZoneInfo("Asia/Shanghai")
+def _load_beijing_timezone() -> dt.tzinfo:
+    try:
+        return ZoneInfo("Asia/Shanghai")
+    except ZoneInfoNotFoundError:
+        # Fall back to a fixed UTC+8 timezone when IANA tz data is unavailable.
+        return dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
+
+
+BEIJING_TIMEZONE = _load_beijing_timezone()
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,8 @@ class OWHeroLeaderboardSyncService:
         self.last_results: Dict[str, OWHeroLeaderboardSyncResult] = {}
 
     async def start(self) -> None:
+        if not is_database_write_enabled():
+            return
         if self._task is not None and not self._task.done():
             return
         await asyncio.to_thread(self.db.initialize_database)
@@ -82,6 +91,16 @@ class OWHeroLeaderboardSyncService:
         return results
 
     async def sync_cn_once(self) -> OWHeroLeaderboardSyncResult:
+        if not is_database_write_enabled():
+            return OWHeroLeaderboardSyncResult(
+                region="cn",
+                status="skipped_db_write_disabled",
+                attempted_targets=0,
+                successful_targets=0,
+                failed_targets=0,
+                rows_written=0,
+                failures=(),
+            )
         targets = self.requests.build_cn_targets()
         rows = []
         failures = []
@@ -152,7 +171,7 @@ class OWHeroLeaderboardSyncService:
         while True:
             try:
                 results = await self.sync_once()
-                logger.debug(
+                print(
                     "[overstats] ow hero leaderboard sync "
                     f"cn_status={results['cn'].status} "
                     f"cn_rows={results['cn'].rows_written} "
@@ -161,7 +180,7 @@ class OWHeroLeaderboardSyncService:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug(f"[overstats] ow hero leaderboard sync failed: {type(exc).__name__}: {exc}")
+                print(f"[overstats] ow hero leaderboard sync failed: {type(exc).__name__}: {exc}")
 
             delay_seconds = self.seconds_until_next_run(self.now_provider())
             await self.sleep_func(delay_seconds)

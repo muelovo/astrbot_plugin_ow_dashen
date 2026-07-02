@@ -42,15 +42,39 @@ register_module(
 )
 
 register_module(
+    "blizzard_player_search",
+    "overstats.src.modules.blizzard_player_search",
+    "Search public international Overwatch player profiles from Blizzard.",
+)
+
+register_module(
+    "blizzard_profile",
+    "overstats.src.modules.blizzard_profile",
+    "Fetch public international Blizzard career profiles and render them in dashen-profile style.",
+)
+
+register_module(
     "dashen_match",
     "overstats.src.modules.dashen_match",
     "Dashen match list and detail data orchestration.",
 )
 
 register_module(
+    "dashen_sameplay",
+    "overstats.src.modules.dashen_sameplay",
+    "Shared-match lookup between two players, with list and detail orchestration.",
+)
+
+register_module(
     "dashen_profile",
     "overstats.src.modules.dashen_profile",
     "Dashen profile card plus sport and leisure count data orchestration.",
+)
+
+register_module(
+    "dashen_hero_treemap",
+    "overstats.src.modules.dashen_hero_treemap",
+    "Dashen hero usage treemap data builder and PIL renderer.",
 )
 
 register_module(
@@ -78,9 +102,33 @@ register_module(
 )
 
 register_module(
+    "dashen_rank_leaderboard",
+    "overstats.src.modules.dashen_rank_leaderboard",
+    "Dashen province rank leaderboard reader and PIL renderer.",
+)
+
+register_module(
+    "dashen_hero_leaderboard",
+    "overstats.src.modules.dashen_hero_leaderboard",
+    "Dashen hero-specific province leaderboard reader and PIL renderer.",
+)
+
+register_module(
     "ow_hero_pick_rate",
     "overstats.src.modules.ow_hero_pick_rate",
     "Global Overwatch hero pick-rate snapshot and history data reader plus PIL renderer.",
+)
+
+register_module(
+    "ow_hero_perk",
+    "overstats.src.modules.ow_hero_perk",
+    "Hero perk overview reader with merged query-tool metadata and PIL renderer.",
+)
+
+register_module(
+    "ow_hero_wiki",
+    "overstats.src.modules.ow_hero_wiki",
+    "Hero wiki overview and hero-specific Q&A reader with structured rendering.",
 )
 
 register_module(
@@ -93,6 +141,12 @@ register_module(
     "patch_notes",
     "overstats.src.modules.patch_notes",
     "Overwatch patch notes fetcher, translator, cache manager, and PIL renderer.",
+)
+
+register_module(
+    "auto_route",
+    "overstats.src.modules.auto_route",
+    "LLM-based module and parameter router for natural-language Overstats requests.",
 )
 
 register_module(

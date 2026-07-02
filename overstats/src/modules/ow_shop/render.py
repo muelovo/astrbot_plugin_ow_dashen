@@ -7,25 +7,28 @@ from typing import Any, Mapping, Sequence
 
 from ...constants.backgrounds import build_random_map_background
 
-try:
-    from overstats.src.modules.font_utils import load_summary_style_fonts
-except ModuleNotFoundError:
-    from src.modules.font_utils import load_summary_style_fonts
-
 from .requests import OWShopSection
-WINDOWS_FONT_CANDIDATES = (
-    "C:/Windows/Fonts/msyh.ttc",
-    "C:/Windows/Fonts/msyhbd.ttc",
-    "C:/Windows/Fonts/simhei.ttf",
-    "C:/Windows/Fonts/simsun.ttc",
-)
+
+try:
+    from overstats.src.modules.font_resolver import load_font
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+RES_DIR = PROJECT_ROOT / "res"
 BACKGROUND_RGB = (25, 30, 40)
 CARD_BG_RGB = (50, 60, 75)
 TEXT_MUTED = (190, 198, 210)
-REFRESH_LABEL = "\u5237\u65b0"
-GENERATED_AT_LABEL = "\u751f\u6210\u65f6\u95f4"
-HUGE_BUNDLE_KEYWORD = "\u8d85\u7ea7\u793c\u5305"
+REFRESH_LABEL = "刷新"
+GENERATED_AT_LABEL = "生成时间"
+HUGE_BUNDLE_KEYWORD = "超级礼包"
 
+
+MAX_RENDER_BYTES = 5 * 1024 * 1024
+PNG_SCALE_STEPS = (0.985, 0.97, 0.955, 0.94, 0.925, 0.91)
+JPEG_QUALITY_STEPS = (96, 94, 92, 90, 88, 86, 84, 82)
+JPEG_SCALE_STEPS = (1.0, 0.985, 0.97, 0.955, 0.94, 0.925, 0.91, 0.895, 0.88, 0.865, 0.85)
 
 @dataclass(frozen=True)
 class RenderedImage:
@@ -48,12 +51,11 @@ def render_ow_shop(
     if not sections:
         raise RuntimeError("OW shop render requires at least one section.")
 
-    fonts = load_summary_style_fonts(1.0)
-    font_section = fonts["section"]
-    font_title = fonts["title_md"]
-    font_price = fonts["body"]
-    font_desc = fonts["body_sm"]
-    font_meta = fonts["body_sm"]
+    font_section = _load_font(50)
+    font_title = _load_font(30)
+    font_price = _load_font(24)
+    font_desc = _load_font(20)
+    font_meta = _load_font(20)
 
     cols = 3
     card_w = 380
@@ -161,9 +163,7 @@ def render_ow_shop(
         )
         final_img.alpha_composite(overlay, (x, y))
 
-    output = BytesIO()
-    final_img.convert("RGB").save(output, format="PNG", optimize=True)
-    return RenderedImage(content=output.getvalue())
+    return _encode_rendered_image(final_img)
 
 
 def _render_text_overlay(
@@ -228,15 +228,96 @@ def _create_card_image(image_path: Path | None, target_w: int, target_h: int, bg
     return card
 
 
+def _encode_rendered_image(image: Any, *, max_bytes: int = MAX_RENDER_BYTES) -> RenderedImage:
+    rgb_image = image.convert("RGB")
+    png_bytes = _save_png_bytes(rgb_image)
+    if len(png_bytes) <= max_bytes:
+        return RenderedImage(content=png_bytes, media_type="image/png")
+    return _compress_rendered_image(rgb_image, max_bytes=max_bytes, fallback_bytes=png_bytes)
+
+
+def _compress_rendered_image(image: Any, *, max_bytes: int, fallback_bytes: bytes) -> RenderedImage:
+    best_bytes = fallback_bytes
+    best_media_type = "image/png"
+    scaled_images: dict[float, Any] = {1.0: image}
+
+    for scale in PNG_SCALE_STEPS:
+        candidate = _scaled_image(image, scale=scale, cache=scaled_images)
+        png_bytes = _save_png_bytes(candidate)
+        if len(png_bytes) < len(best_bytes):
+            best_bytes = png_bytes
+            best_media_type = "image/png"
+        if len(png_bytes) <= max_bytes:
+            return RenderedImage(content=png_bytes, media_type="image/png")
+
+    for quality in JPEG_QUALITY_STEPS:
+        for scale in JPEG_SCALE_STEPS:
+            candidate = _scaled_image(image, scale=scale, cache=scaled_images)
+            jpeg_bytes = _save_jpeg_bytes(candidate, quality=quality)
+            if len(jpeg_bytes) < len(best_bytes):
+                best_bytes = jpeg_bytes
+                best_media_type = "image/jpeg"
+            if len(jpeg_bytes) <= max_bytes:
+                return RenderedImage(content=jpeg_bytes, media_type="image/jpeg")
+
+    return RenderedImage(content=best_bytes, media_type=best_media_type)
+
+
+def _scaled_image(image: Any, *, scale: float, cache: dict[float, Any]) -> Any:
+    if scale in cache:
+        return cache[scale]
+    source_width = max(1, int(image.width))
+    source_height = max(1, int(image.height))
+    scaled = image.resize(
+        (
+            max(1, int(source_width * scale)),
+            max(1, int(source_height * scale)),
+        ),
+        _resampling_lanczos(),
+    )
+    cache[scale] = scaled
+    return scaled
+
+
+def _save_png_bytes(image: Any) -> bytes:
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _save_jpeg_bytes(image: Any, *, quality: int) -> bytes:
+    output = BytesIO()
+    try:
+        image.save(
+            output,
+            format="JPEG",
+            quality=max(70, int(quality)),
+            optimize=True,
+            progressive=True,
+            subsampling=0,
+        )
+    except OSError:
+        output = BytesIO()
+        image.save(
+            output,
+            format="JPEG",
+            quality=max(70, int(quality) - 4),
+            optimize=False,
+            progressive=False,
+            subsampling=0,
+        )
+    return output.getvalue()
+
+
 def _price_label(price_raw: int | float, currency: str) -> tuple[str, tuple[int, int, int]]:
     currency = str(currency or "").upper()
     if currency == "XWC":
-        return f"{price_raw} \u91d1\u5e01", (230, 170, 20)
+        return f"{price_raw} 金币", (230, 170, 20)
     if currency == "CPT":
-        return f"{price_raw} \u6218\u7f51\u70b9", (180, 20, 20)
+        return f"{price_raw} 战网点", (180, 20, 20)
     if currency == "XVT":
-        return f"{price_raw} \u5149\u5b50\u6c34\u6676", (120, 200, 255)
-    return f"{price_raw} \u4ee3\u5e01", (200, 200, 200)
+        return f"{price_raw} 光子水晶", (120, 200, 255)
+    return f"{price_raw} 代币", (200, 200, 200)
 
 
 def _draw_badge(draw: Any, right_x: int, top_y: int, text: str, font: Any, bg_color: Any, text_color: Any) -> None:
@@ -274,6 +355,16 @@ def _text_width(text: str, font: Any) -> float:
         return float(font.getlength(text))
     bbox = font.getbbox(text)
     return float((bbox[2] - bbox[0]) if bbox else 0)
+
+
+def _load_font(size: int) -> Any:
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback="en2.ttf",
+        prefer_cjk=True,
+        extra=("en.ttf", "GrotaRoundedExtraBold.otf", "BigNoodleToo.ttf"),
+    )
 
 
 def _resampling_lanczos() -> Any:

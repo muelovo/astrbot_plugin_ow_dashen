@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Overstats 控制面板</title>
+    <link rel="stylesheet" href="/ui/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <p class="eyebrow">Overstats</p>
+          <h1>网页控制面板</h1>
+          <p class="sidebar-copy">请先在左侧选择模块，然后在右侧查看 JSON、图片以及比赛详情回复包。</p>
+        </div>
+        <nav id="moduleNav" class="module-nav" aria-label="模块列表"></nav>
+      </aside>
+
+      <main class="workspace">
+        <section class="hero-panel">
+          <div>
+            <p class="eyebrow">当前模块</p>
+            <h2 id="moduleTitle">加载中</h2>
+            <p id="moduleDescription" class="module-description"></p>
+          </div>
+          <div class="endpoint-card">
+            <span class="endpoint-label">接口地址</span>
+            <code id="activeEndpoint">/api/v2/...</code>
+          </div>
+        </section>
+
+        <section class="grid">
+          <div class="panel request-panel">
+            <div class="panel-head">
+              <h3>请求表单</h3>
+              <button id="resetJsonButton" class="ghost-button" type="button">根据表单重置 JSON</button>
+            </div>
+
+            <form id="requestForm" class="request-form">
+              <div class="field-grid">
+                <label class="field">
+                  <span>响应模式</span>
+                  <select id="modeSelect" name="mode">
+                    <option value="json">JSON</option>
+                    <option value="image">图片</option>
+                  </select>
+                </label>
+
+                <label id="targetTypeField" class="field">
+                  <span>目标类型</span>
+                  <select id="targetTypeSelect" name="target_type">
+                    <option value="bnet_id">bnet_id</option>
+                    <option value="customer_token">customer_token</option>
+                  </select>
+                </label>
+
+                <label id="targetValueField" class="field field-span-2">
+                  <span>目标值</span>
+                  <input
+                    id="targetValueInput"
+                    name="target_value"
+                    type="text"
+                    placeholder="示例：Player#12345"
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+
+              <div id="dynamicFields" class="field-grid"></div>
+
+              <label class="field field-block">
+                <span>原始 JSON 覆盖</span>
+                <textarea
+                  id="payloadEditor"
+                  name="payload_editor"
+                  rows="14"
+                  spellcheck="false"
+                ></textarea>
+              </label>
+
+              <div class="actions">
+                <button id="submitButton" class="primary-button" type="submit">发送请求</button>
+                <span id="requestStatus" class="request-status">等待发送请求</span>
+              </div>
+            </form>
+          </div>
+
+          <div class="panel preview-panel">
+            <div class="panel-head">
+              <h3>结果预览</h3>
+              <span id="responseMeta" class="response-meta">暂未发送请求</span>
+            </div>
+
+            <div class="preview-stack">
+              <section class="preview-card">
+                <div class="preview-head">
+                  <h4>JSON 预览</h4>
+                </div>
+                <pre id="jsonPreview" class="preview-code">{
+  "hint": "请选择模块并发送请求"
+}</pre>
+              </section>
+
+              <section class="preview-card">
+                <div class="preview-head">
+                  <h4>图片预览</h4>
+                </div>
+                <div id="imagePlaceholder" class="image-placeholder">图片响应会显示在这里。</div>
+                <img id="imagePreview" class="image-preview hidden" alt="API 图片预览" />
+              </section>
+
+              <section class="preview-card">
+                <div class="preview-head">
+                  <h4>回复预览</h4>
+                  <span id="replyMeta" class="response-meta">适用于 OW 猜一猜和其他 replies 接口</span>
+                </div>
+                <div id="replyPlaceholder" class="image-placeholder">当 JSON 响应包含 replies 内容时，文字、图片或音频题面，以及详情面板等回复内容会显示在这里。</div>
+                <div id="replyPreview" class="reply-preview hidden"></div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    __OVERSTATS_UI_BOOTSTRAP__
+    <script src="/ui/app.js"></script>
+  </body>
+</html>

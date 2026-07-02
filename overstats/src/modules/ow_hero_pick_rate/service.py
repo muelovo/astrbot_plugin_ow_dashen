@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 try:
-    from overstats.src.constants.chara import CHARA_NAME, iter_hero_alias_pairs
     from overstats.src.db import HERO_LEADERBOARD_CN_TABLE, OWHeroLeaderboardDB
     from overstats.src.modules.errors import ModuleError
     from overstats.src.modules.query_tool import load_query_tool
@@ -13,7 +12,6 @@ try:
         QUICK_STRENGTH_THEME,
     )
 except ModuleNotFoundError:
-    from src.constants.chara import CHARA_NAME, iter_hero_alias_pairs
     from src.db import HERO_LEADERBOARD_CN_TABLE, OWHeroLeaderboardDB
     from src.modules.errors import ModuleError
     from src.modules.query_tool import load_query_tool
@@ -83,7 +81,6 @@ class OWHeroPickRateHeroMeta:
     hero_guid: str
     hero_name: str
     hero_role: str
-    hero_code: str = ""
     icon_url: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -91,7 +88,6 @@ class OWHeroPickRateHeroMeta:
             "hero_guid": self.hero_guid,
             "hero_name": self.hero_name,
             "hero_role": self.hero_role,
-            "hero_code": self.hero_code,
             "icon_url": self.icon_url,
         }
 
@@ -300,14 +296,14 @@ class OWHeroPickRateModule:
             HERO_LEADERBOARD_CN_TABLE,
             game_mode=source_mode,
             mmr=source_mmr,
-            hero_id=hero_meta.hero_code or hero_meta.hero_guid,
+            hero_id=hero_meta.hero_guid,
         )
         if not rows:
             raise ModuleError(
                 error="hero_pick_rate_history_empty",
                 message="No hero pick-rate history found for the requested hero.",
                 status_code=404,
-                details={"hero": hero_meta.hero_code or hero_meta.hero_guid, "game_mode": query.game_mode, "mmr": query.mmr},
+                details={"hero": hero_meta.hero_guid, "game_mode": query.game_mode, "mmr": query.mmr},
             )
 
         sorted_rows = sorted(
@@ -363,11 +359,6 @@ class OWHeroPickRateModule:
     def _build_hero_lookup(self, config: Dict[str, Any]) -> Dict[str, Dict[str, OWHeroPickRateHeroMeta]]:
         by_guid: Dict[str, OWHeroPickRateHeroMeta] = {}
         by_name: Dict[str, OWHeroPickRateHeroMeta] = {}
-        hero_code_by_name = {
-            self._normalize_hero_name(hero_name): str(aliases[0]).strip()
-            for hero_name, aliases in CHARA_NAME.items()
-            if aliases
-        }
         for item in list(config.get("heroList") or []):
             if not isinstance(item, dict):
                 continue
@@ -380,21 +371,11 @@ class OWHeroPickRateModule:
                 hero_guid=hero_guid,
                 hero_name=hero_name,
                 hero_role=str(item.get("roleType") or "").strip(),
-                hero_code=hero_code_by_name.get(self._normalize_hero_name(hero_name), ""),
                 icon_url=icon_url,
             )
             by_guid[hero_guid] = hero_meta
-            if hero_meta.hero_code:
-                by_guid[hero_meta.hero_code] = hero_meta
             if hero_name:
                 by_name[self._normalize_hero_name(hero_name)] = hero_meta
-
-        canonical_hero_names = {self._normalize_hero_name(meta.hero_name): meta for meta in by_guid.values() if meta.hero_name}
-        for alias, canonical_name in iter_hero_alias_pairs():
-            canonical_meta = canonical_hero_names.get(self._normalize_hero_name(canonical_name))
-            if canonical_meta is None:
-                continue
-            by_name.setdefault(self._normalize_hero_name(alias), canonical_meta)
         return {"by_guid": by_guid, "by_name": by_name}
 
     def _resolve_hero_meta(

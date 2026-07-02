@@ -21,6 +21,8 @@ try:
 except ModuleNotFoundError:
     from config import config as app_config
 
+from ..analysis_common import build_async_client as build_analysis_async_client
+from ..analysis_common import get_analysis_proxy
 from ...constants.chara import iter_hero_alias_pairs
 
 
@@ -143,7 +145,7 @@ def normalize_image_url(value: str) -> str:
 
 def _normalize_term_key(text: Any) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip().lower()
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
+    return re.sub(r"[^0-9a-z一-鿿]+", "", normalized)
 
 
 def _build_hero_name_map() -> Dict[str, str]:
@@ -959,7 +961,8 @@ class PatchNotesRequests:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=TRANSLATION_TIMEOUT) as client:
+        proxy_url = get_analysis_proxy(base_url)
+        async with build_analysis_async_client(timeout=TRANSLATION_TIMEOUT, proxy_url=proxy_url) as client:
             response = await client.post(_chat_completion_url(base_url), json=payload, headers=headers)
             response.raise_for_status()
             raw_content = _extract_llm_message_content(response.json())

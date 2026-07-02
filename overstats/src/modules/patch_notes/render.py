@@ -9,15 +9,13 @@ from typing import Any, Mapping, Sequence
 from ...constants.backgrounds import build_random_map_background
 
 try:
-    from overstats.src.modules.font_utils import RES_DIR, load_chinese_font
+    from overstats.src.modules.font_resolver import load_font
 except ModuleNotFoundError:
-    from src.modules.font_utils import RES_DIR, load_chinese_font
-WINDOWS_FONT_CANDIDATES = (
-    "C:/Windows/Fonts/msyh.ttc",
-    "C:/Windows/Fonts/msyhbd.ttc",
-    "C:/Windows/Fonts/simhei.ttf",
-    "C:/Windows/Fonts/simsun.ttc",
-)
+    from src.modules.font_resolver import load_font
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+RES_DIR = PROJECT_ROOT / "res"
 FINAL_BG = (12, 17, 26)
 BACKGROUND_TOP = (8, 13, 21)
 BACKGROUND_BOTTOM = (18, 28, 43)
@@ -35,20 +33,26 @@ TEXT_ACCENT = (139, 208, 255)
 TEXT_WARNING = (255, 217, 145)
 TEXT_SUCCESS = (182, 255, 204)
 TEXT_DANGER = (255, 167, 167)
-CANVAS_WIDTH = 1520
-CANVAS_MARGIN = 36
-CARD_GAP = 20
-TEMP_CARD_HEIGHT = 42000
-HEADER_RADIUS = 18
-CARD_RADIUS = 16
-IMAGE_RADIUS = 14
-LABEL_RADIUS = 11
+BASE_CANVAS_WIDTH = 1520
+BASE_FALLBACK_WIDTH = 1200
+CANVAS_WIDTH = 1920
+RENDER_SCALE = CANVAS_WIDTH / float(BASE_CANVAS_WIDTH)
+CANVAS_MARGIN = max(1, int(round(36 * RENDER_SCALE)))
+CARD_GAP = max(1, int(round(20 * RENDER_SCALE)))
+HEADER_RADIUS = max(1, int(round(18 * RENDER_SCALE)))
+CARD_RADIUS = max(1, int(round(16 * RENDER_SCALE)))
+IMAGE_RADIUS = max(1, int(round(14 * RENDER_SCALE)))
+LABEL_RADIUS = max(1, int(round(11 * RENDER_SCALE)))
 
 
 @dataclass(frozen=True)
 class RenderedImage:
     content: bytes
     media_type: str = "image/png"
+
+
+def _px(value: int | float) -> int:
+    return max(1, int(round(float(value) * RENDER_SCALE)))
 
 
 def render_patch_notes(
@@ -62,17 +66,43 @@ def render_patch_notes(
     except ModuleNotFoundError as exc:
         raise RuntimeError("render.py requires Pillow to output images") from exc
 
-    canvas = Image.new("RGBA", (CANVAS_WIDTH, TEMP_CARD_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas, "RGBA")
-
     fonts = {
-        "headline": _load_font(50, bold=True),
-        "section": _load_font(34, bold=True),
-        "title": _load_font(28, bold=True),
-        "body": _load_font(22),
-        "small": _load_font(19),
-        "label": _load_font(18, bold=True),
+        "headline": _load_font(_px(50), bold=True),
+        "section": _load_font(_px(34), bold=True),
+        "title": _load_font(_px(28), bold=True),
+        "body": _load_font(_px(22)),
+        "small": _load_font(_px(19)),
+        "label": _load_font(_px(18), bold=True),
     }
+
+    final_height = max(
+        _draw_patch_notes_content(
+            canvas=None,
+            draw=None,
+            candidate=candidate,
+            summary_text=summary_text,
+            asset_paths={},
+            fonts=fonts,
+        )
+        + CANVAS_MARGIN,
+        _px(240),
+    )
+    canvas = Image.new("RGBA", (CANVAS_WIDTH, final_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    _draw_patch_notes_content(
+        canvas=canvas,
+        draw=draw,
+        candidate=candidate,
+        summary_text=summary_text,
+        asset_paths=asset_paths,
+        fonts=fonts,
+    )
+    background = _build_background(CANVAS_WIDTH, final_height)
+    background.alpha_composite(canvas)
+
+    output = BytesIO()
+    background.convert("RGB").save(output, format="PNG", optimize=True)
+    return RenderedImage(content=output.getvalue())
 
     y = CANVAS_MARGIN
     y = _draw_header_card(draw, candidate, summary_text, fonts, y)
@@ -119,18 +149,64 @@ def render_patch_notes(
     return RenderedImage(content=output.getvalue())
 
 
+def _draw_patch_notes_content(
+    *,
+    canvas: Any | None,
+    draw: Any | None,
+    candidate: Mapping[str, Any],
+    summary_text: str,
+    asset_paths: Mapping[str, Path],
+    fonts: Mapping[str, Any],
+) -> int:
+    y = CANVAS_MARGIN
+    y = _draw_header_card(draw, candidate, summary_text, fonts, y)
+
+    for section in candidate.get("sections") or []:
+        y = _draw_section_title(draw, section.get("title", ""), fonts, y)
+        intro = list(section.get("intro") or [])
+        if intro:
+            y = _draw_text_card(
+                draw,
+                title="姒傝",
+                body_lines=intro,
+                fonts=fonts,
+                y=y,
+                accent=TEXT_ACCENT,
+            )
+
+        for hero_update in section.get("hero_updates") or []:
+            y = _draw_hero_card(canvas, draw, hero_update, asset_paths, fonts, y)
+        for map_update in section.get("map_updates") or []:
+            y = _draw_map_card(canvas, draw, map_update, asset_paths, fonts, y)
+        for general_update in section.get("general_updates") or []:
+            lines = []
+            lines.extend(general_update.get("paragraphs") or [])
+            lines.extend(f"鈥?{item}" for item in (general_update.get("bullets") or []))
+            if general_update.get("dev_note"):
+                lines.append(f"寮€鍙戣€呰鏄庯細{general_update.get('dev_note')}")
+            y = _draw_text_card(
+                draw,
+                title=general_update.get("title", "琛ヤ竵鏉＄洰"),
+                body_lines=lines,
+                fonts=fonts,
+                y=y,
+                accent=TEXT_SUCCESS if general_update.get("dev_note") else TEXT_ACCENT,
+            )
+    return y
+
+
 def render_patch_fallback(candidate: Mapping[str, Any], *, summary_text: str) -> RenderedImage:
     try:
         from PIL import Image, ImageDraw
     except ModuleNotFoundError as exc:
         raise RuntimeError("render.py requires Pillow to output images") from exc
 
-    width = 1200
-    margin = 56
+    width = _px(BASE_FALLBACK_WIDTH)
+    margin = _px(56)
     fonts = {
-        "headline": _load_font(34, bold=True),
-        "meta": _load_font(20, bold=True),
-        "body": _load_font(20),
+        "headline": _load_font(_px(34), bold=True),
+        "meta": _load_font(_px(20), bold=True),
+        "body": _load_font(_px(20)),
     }
 
     title_lines = _wrap_text(str(candidate.get("title") or ""), fonts["headline"], width - margin * 2)
@@ -139,46 +215,52 @@ def render_patch_fallback(candidate: Mapping[str, Any], *, summary_text: str) ->
 
     height = (
         margin * 2
-        + max(1, len(title_lines)) * 46
-        + 24
-        + max(1, len(summary_lines)) * 28
-        + 28
-        + max(1, len(body_lines)) * 28
-        + 48
+        + max(1, len(title_lines)) * _px(46)
+        + _px(24)
+        + max(1, len(summary_lines)) * _px(28)
+        + _px(28)
+        + max(1, len(body_lines)) * _px(28)
+        + _px(48)
     )
     image = _build_background(width, height)
     draw = ImageDraw.Draw(image, "RGBA")
     draw.rounded_rectangle(
-        (24, 24, width - 24, height - 24),
+        (_px(24), _px(24), width - _px(24), height - _px(24)),
         radius=HEADER_RADIUS,
         fill=CARD_BG + (242,),
         outline=CARD_OUTLINE,
-        width=2,
+        width=max(1, _px(2)),
     )
 
     y = margin
     for line in title_lines:
         draw.text((margin, y), line, font=fonts["headline"], fill=TEXT_PRIMARY)
-        y += 46
-    y += 12
+        y += _px(46)
+    y += _px(12)
     for line in summary_lines:
         draw.text((margin, y), line, font=fonts["meta"], fill=TEXT_ACCENT)
-        y += 28
-    y += 12
+        y += _px(28)
+    y += _px(12)
     for line in body_lines:
         draw.text((margin, y), line, font=fonts["body"], fill=TEXT_SECONDARY)
-        y += 28
+        y += _px(28)
 
     output = BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return RenderedImage(content=output.getvalue())
 
 
-def _draw_header_card(draw: Any, candidate: Mapping[str, Any], summary_text: str, fonts: Mapping[str, Any], y: int) -> int:
+def _draw_header_card(draw: Any | None, candidate: Mapping[str, Any], summary_text: str, fonts: Mapping[str, Any], y: int) -> int:
     title_lines = _wrap_text(str(candidate.get("title") or "补丁说明"), fonts["headline"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - 40)
     summary_lines = []
     for line in str(summary_text or "").splitlines():
         wrapped = _wrap_text(line, fonts["small"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - 40)
+        summary_lines.extend(wrapped or [""])
+    content_width = CANVAS_WIDTH - CANVAS_MARGIN * 2 - _px(40)
+    title_lines = _wrap_text(str(candidate.get("title") or "琛ヤ竵璇存槑"), fonts["headline"], content_width)
+    summary_lines = []
+    for line in str(summary_text or "").splitlines():
+        wrapped = _wrap_text(line, fonts["small"], content_width)
         summary_lines.extend(wrapped or [""])
 
     meta_lines = [
@@ -186,41 +268,46 @@ def _draw_header_card(draw: Any, candidate: Mapping[str, Any], summary_text: str
         f"分类：{candidate.get('bucket_name', '')}",
         f"日期：{candidate.get('date_text', '')}",
     ]
-    meta_height = len(meta_lines) * 28
-    body_height = len(summary_lines) * 24
-    title_height = len(title_lines) * 58
-    card_h = 36 + title_height + 20 + meta_height + 20 + body_height + 28
+    meta_height = len(meta_lines) * _px(28)
+    body_height = len(summary_lines) * _px(24)
+    title_height = len(title_lines) * _px(58)
+    card_h = _px(36) + title_height + _px(20) + meta_height + _px(20) + body_height + _px(28)
     card_box = (
         CANVAS_MARGIN,
         y,
         CANVAS_WIDTH - CANVAS_MARGIN,
         y + card_h,
     )
-    draw.rounded_rectangle(card_box, radius=HEADER_RADIUS, fill=CARD_BG + (242,), outline=CARD_OUTLINE, width=2)
+    if draw is None:
+        return card_box[3] + _px(28)
+    draw.rounded_rectangle(card_box, radius=HEADER_RADIUS, fill=CARD_BG + (242,), outline=CARD_OUTLINE, width=max(1, _px(2)))
 
-    inner_x = card_box[0] + 22
-    inner_y = card_box[1] + 20
+    inner_x = card_box[0] + _px(22)
+    inner_y = card_box[1] + _px(20)
     for line in title_lines:
         draw.text((inner_x, inner_y), line, font=fonts["headline"], fill=TEXT_PRIMARY)
-        inner_y += 58
-    inner_y += 4
+        inner_y += _px(58)
+    inner_y += _px(4)
     for line in meta_lines:
         draw.text((inner_x, inner_y), line, font=fonts["label"], fill=TEXT_WARNING)
-        inner_y += 28
-    inner_y += 8
+        inner_y += _px(28)
+    inner_y += _px(8)
     for line in summary_lines:
         draw.text((inner_x, inner_y), line, font=fonts["small"], fill=TEXT_SECONDARY)
-        inner_y += 24
-    return card_box[3] + 28
+        inner_y += _px(24)
+    return card_box[3] + _px(28)
 
 
-def _draw_section_title(draw: Any, title: str, fonts: Mapping[str, Any], y: int) -> int:
+def _draw_section_title(draw: Any | None, title: str, fonts: Mapping[str, Any], y: int) -> int:
+    if draw is not None:
+        draw.text((CANVAS_MARGIN, y), str(title or "Patch Section"), font=fonts["section"], fill=TEXT_ACCENT)
+    return y + _px(54)
     draw.text((CANVAS_MARGIN, y), str(title or "补丁章节"), font=fonts["section"], fill=TEXT_ACCENT)
     return y + 54
 
 
 def _draw_text_card(
-    draw: Any,
+    draw: Any | None,
     *,
     title: str,
     body_lines: Sequence[str],
@@ -232,31 +319,33 @@ def _draw_text_card(
     for line in body_lines:
         if not str(line or "").strip():
             continue
-        wrapped_lines.extend(_wrap_text(str(line), fonts["body"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - 44))
+        wrapped_lines.extend(_wrap_text(str(line), fonts["body"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - _px(44)))
 
-    card_h = 26 + 36 + 16 + max(1, len(wrapped_lines)) * 28 + 22
+    card_h = _px(26) + _px(36) + _px(16) + max(1, len(wrapped_lines)) * _px(28) + _px(22)
     box = (CANVAS_MARGIN, y, CANVAS_WIDTH - CANVAS_MARGIN, y + card_h)
-    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_SOFT_BG + (242,), outline=CARD_OUTLINE, width=1)
-    inner_x = box[0] + 22
-    inner_y = box[1] + 18
+    if draw is None:
+        return box[3] + CARD_GAP
+    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_SOFT_BG + (242,), outline=CARD_OUTLINE, width=max(1, _px(1)))
+    inner_x = box[0] + _px(22)
+    inner_y = box[1] + _px(18)
     draw.text((inner_x, inner_y), str(title or "补丁条目"), font=fonts["title"], fill=accent)
-    inner_y += 44
+    inner_y += _px(44)
     for line in wrapped_lines:
         draw.text((inner_x, inner_y), line, font=fonts["body"], fill=TEXT_SECONDARY)
-        inner_y += 28
+        inner_y += _px(28)
     return box[3] + CARD_GAP
 
 
 def _draw_hero_card(
-    canvas: Any,
-    draw: Any,
+    canvas: Any | None,
+    draw: Any | None,
     hero_update: Mapping[str, Any],
     asset_paths: Mapping[str, Path],
     fonts: Mapping[str, Any],
     y: int,
 ) -> int:
-    right_w = CANVAS_WIDTH - CANVAS_MARGIN * 2 - 44
-    text_w = right_w - 118
+    right_w = CANVAS_WIDTH - CANVAS_MARGIN * 2 - _px(44)
+    text_w = right_w - _px(118)
     line_groups: list[tuple[str, tuple[int, int, int]]] = []
     for change in hero_update.get("general_changes") or []:
         line_groups.append((f"• {change}", TEXT_SECONDARY))
@@ -272,37 +361,39 @@ def _draw_hero_card(
         lines = _wrap_text(text, fonts["body"], text_w)
         wrapped_lines.extend((line, color) for line in lines)
 
-    card_h = max(148, 30 + 36 + 12 + len(wrapped_lines) * 28 + 24)
+    card_h = max(_px(148), _px(30) + _px(36) + _px(12) + len(wrapped_lines) * _px(28) + _px(24))
     box = (CANVAS_MARGIN, y, CANVAS_WIDTH - CANVAS_MARGIN, y + card_h)
-    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_ALT_BG + (242,), outline=CARD_OUTLINE, width=1)
+    if draw is None:
+        return box[3] + CARD_GAP
+    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_ALT_BG + (242,), outline=CARD_OUTLINE, width=max(1, _px(1)))
 
-    icon_box = (box[0] + 20, box[1] + 20, box[0] + 108, box[1] + 108)
+    icon_box = (box[0] + _px(20), box[1] + _px(20), box[0] + _px(108), box[1] + _px(108))
     _paste_card_image(canvas, asset_paths.get(str(hero_update.get("icon_url") or "")), icon_box)
 
-    text_x = icon_box[2] + 18
-    text_y = box[1] + 18
+    text_x = icon_box[2] + _px(18)
+    text_y = box[1] + _px(18)
     draw.text((text_x, text_y), str(hero_update.get("name") or "英雄改动"), font=fonts["title"], fill=TEXT_PRIMARY)
-    text_y += 40
+    text_y += _px(40)
     if hero_update.get("group_title"):
         draw.text((text_x, text_y), str(hero_update.get("group_title") or ""), font=fonts["small"], fill=TEXT_MUTED)
-        text_y += 28
+        text_y += _px(28)
     for line, color in wrapped_lines:
         draw.text((text_x, text_y), line, font=fonts["body"], fill=color)
-        text_y += 28
+        text_y += _px(28)
     return box[3] + CARD_GAP
 
 
 def _draw_map_card(
-    canvas: Any,
-    draw: Any,
+    canvas: Any | None,
+    draw: Any | None,
     map_update: Mapping[str, Any],
     asset_paths: Mapping[str, Path],
     fonts: Mapping[str, Any],
     y: int,
 ) -> int:
-    image_h = 220
-    half_gap = 10
-    image_w = int((CANVAS_WIDTH - CANVAS_MARGIN * 2 - 44 - half_gap) / 2)
+    image_h = _px(220)
+    half_gap = _px(10)
+    image_w = int((CANVAS_WIDTH - CANVAS_MARGIN * 2 - _px(44) - half_gap) / 2)
     line_groups: list[tuple[str, tuple[int, int, int]]] = []
     if map_update.get("comparison_label"):
         line_groups.append((str(map_update.get("comparison_label") or ""), TEXT_WARNING))
@@ -313,17 +404,19 @@ def _draw_map_card(
 
     wrapped_lines: list[tuple[str, tuple[int, int, int]]] = []
     for text, color in line_groups:
-        lines = _wrap_text(text, fonts["body"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - 44)
+        lines = _wrap_text(text, fonts["body"], CANVAS_WIDTH - CANVAS_MARGIN * 2 - _px(44))
         wrapped_lines.extend((line, color) for line in lines)
 
-    card_h = 28 + 36 + 18 + image_h + 18 + max(1, len(wrapped_lines)) * 28 + 22
+    card_h = _px(28) + _px(36) + _px(18) + image_h + _px(18) + max(1, len(wrapped_lines)) * _px(28) + _px(22)
     box = (CANVAS_MARGIN, y, CANVAS_WIDTH - CANVAS_MARGIN, y + card_h)
-    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_SOFT_BG + (242,), outline=CARD_OUTLINE, width=1)
+    if draw is None:
+        return box[3] + CARD_GAP
+    draw.rounded_rectangle(box, radius=CARD_RADIUS, fill=CARD_SOFT_BG + (242,), outline=CARD_OUTLINE, width=max(1, _px(1)))
 
-    text_x = box[0] + 22
-    text_y = box[1] + 18
+    text_x = box[0] + _px(22)
+    text_y = box[1] + _px(18)
     draw.text((text_x, text_y), str(map_update.get("name") or "地图更新"), font=fonts["title"], fill=TEXT_ACCENT)
-    text_y += 46
+    text_y += _px(46)
 
     left_box = (text_x, text_y, text_x + image_w, text_y + image_h)
     right_box = (left_box[2] + half_gap, text_y, left_box[2] + half_gap + image_w, text_y + image_h)
@@ -332,26 +425,28 @@ def _draw_map_card(
     _draw_box_label(draw, left_box, "变更前", fonts["small"])
     _draw_box_label(draw, right_box, "变更后", fonts["small"])
 
-    text_y = left_box[3] + 18
+    text_y = left_box[3] + _px(18)
     for line, color in wrapped_lines:
         draw.text((text_x, text_y), line, font=fonts["body"], fill=color)
-        text_y += 28
+        text_y += _px(28)
     return box[3] + CARD_GAP
 
 
 def _draw_box_label(draw: Any, box: Sequence[int], text: str, font: Any) -> None:
-    label_w = max(76, int(_text_width(text, font)) + 24)
+    label_w = max(_px(76), int(_text_width(text, font)) + _px(24))
     draw.rounded_rectangle(
-        (box[0] + 12, box[1] + 12, box[0] + 12 + label_w, box[1] + 42),
+        (box[0] + _px(12), box[1] + _px(12), box[0] + _px(12) + label_w, box[1] + _px(42)),
         radius=LABEL_RADIUS,
         fill=(0, 0, 0, 150),
     )
-    draw.text((box[0] + 24, box[1] + 18), text, font=font, fill=TEXT_PRIMARY)
+    draw.text((box[0] + _px(24), box[1] + _px(18)), text, font=font, fill=TEXT_PRIMARY)
 
 
-def _paste_card_image(canvas: Any, image_path: Path | None, box: Sequence[int]) -> None:
+def _paste_card_image(canvas: Any | None, image_path: Path | None, box: Sequence[int]) -> None:
     from PIL import Image, ImageDraw
 
+    if canvas is None:
+        return
     width = int(box[2] - box[0])
     height = int(box[3] - box[1])
     holder = Image.new("RGBA", (width, height), CARD_BG + (255,))
@@ -382,7 +477,7 @@ def _build_background(width: int, height: int) -> Any:
 
     background = build_random_map_background(
         (width, height),
-        blur_radius=18,
+        blur_radius=_px(18),
         overlay=(9, 14, 22, 112),
         brightness=0.78,
         color=0.88,
@@ -408,19 +503,19 @@ def _build_background(width: int, height: int) -> Any:
     glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     glow_draw = ImageDraw.Draw(glow, "RGBA")
     glow_draw.ellipse(
-        (-180, -80, int(width * 0.58), int(height * 0.34)),
+        (-_px(180), -_px(80), int(width * 0.58), int(height * 0.34)),
         fill=BACKGROUND_GLOW_PRIMARY,
     )
     glow_draw.ellipse(
-        (int(width * 0.48), int(height * 0.08), width + 220, int(height * 0.58)),
+        (int(width * 0.48), int(height * 0.08), width + _px(220), int(height * 0.58)),
         fill=BACKGROUND_GLOW_SECONDARY,
     )
 
-    stripe_step = 170
+    stripe_step = _px(170)
     for offset in range(-height, width + height, stripe_step):
-        glow_draw.line((offset, 0, offset + height, height), fill=BACKGROUND_LINE, width=2)
+        glow_draw.line((offset, 0, offset + height, height), fill=BACKGROUND_LINE, width=max(1, _px(2)))
 
-    glow = glow.filter(ImageFilter.GaussianBlur(26))
+    glow = glow.filter(ImageFilter.GaussianBlur(_px(26)))
     background.alpha_composite(glow)
     return background
 
@@ -428,7 +523,7 @@ def _build_background(width: int, height: int) -> Any:
 def _wrap_text(text: str, font: Any, max_width: int) -> list[str]:
     if not text:
         return []
-    token_pattern = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9][A-Za-z0-9'’/().,+%:-]*|\s+|.", re.UNICODE)
+    token_pattern = re.compile(r"[一-鿿]|[A-Za-z0-9][A-Za-z0-9'’/().,+%:-]*|\s+|.", re.UNICODE)
     lines: list[str] = []
     for paragraph in str(text).split("\n"):
         paragraph = paragraph.rstrip()
@@ -469,7 +564,16 @@ def _text_width(text: str, font: Any) -> float:
 
 
 def _load_font(size: int, *, bold: bool = False) -> Any:
-    return load_chinese_font(size, bold=bold)
+    fallback = "GrotaRoundedExtraBold.otf" if bold else "en2.ttf"
+    extra = ("BigNoodleToo.ttf", "en.ttf") if bold else ("en.ttf", "BigNoodleToo.ttf")
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback=fallback,
+        prefer_cjk=True,
+        bold=bold,
+        extra=extra,
+    )
 
 
 def _resampling_lanczos() -> Any:

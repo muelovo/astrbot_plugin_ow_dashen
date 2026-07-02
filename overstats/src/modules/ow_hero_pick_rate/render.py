@@ -8,27 +8,37 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from ...constants.backgrounds import build_random_map_background
 
 try:
-    from overstats.src.modules.font_utils import (
-        RES_DIR as RESOURCE_DIR,
-        load_chinese_font,
-        load_resource_font,
-    )
     from overstats.src.modules.query_tool import get_cached_asset_path
     from overstats.src.modules.dashen_quick_strength.render import (
         COMPETITIVE_STRENGTH_THEME,
         QUICK_STRENGTH_THEME,
     )
 except ModuleNotFoundError:
-    from src.modules.font_utils import (
-        RES_DIR as RESOURCE_DIR,
-        load_chinese_font,
-        load_resource_font,
-    )
     from src.modules.query_tool import get_cached_asset_path
     from src.modules.dashen_quick_strength.render import (
         COMPETITIVE_STRENGTH_THEME,
         QUICK_STRENGTH_THEME,
     )
+
+try:
+    from overstats.src.modules.font_resolver import load_font
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font
+
+
+def _resolve_resource_dir() -> Path:
+    here = Path(__file__).resolve()
+    candidates = (
+        here.parents[3] / "res",
+        here.parents[4] / "overstats" / "res",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+RESOURCE_DIR = _resolve_resource_dir()
 DEFAULT_THEME = dict(QUICK_STRENGTH_THEME)
 
 
@@ -576,11 +586,17 @@ def _load_fonts(scale: int) -> Dict[str, Any]:
 
 
 def _font_resource(name: str, size: int, *, fallback: str | None = None) -> Any:
-    return load_resource_font(name, size, fallback=fallback)
+    return load_font(size, name=name, fallback=fallback)
 
 
 def _font_chinese(size: int, *, bold: bool = False) -> Any:
-    return load_chinese_font(size, bold=bold)
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback="GrotaRoundedExtraBold.otf",
+        prefer_cjk=True,
+        bold=bold,
+    )
 
 
 def _measure_text(draw: Any, text: str, font: Any) -> int:

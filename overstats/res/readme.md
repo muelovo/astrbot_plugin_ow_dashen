@@ -2,8 +2,6 @@
 
 本目录用于存放 `overstats` 运行和绘制过程中使用的资源文件。
 
-**中文字体**：图片渲染依赖 `simhei.ttf`（黑体）。请确保该文件存在于本目录；若缺失，在 Linux 等非 Windows 环境上中文会显示为方框。Windows 可回退到系统自带的 `msyh.ttc` / `simhei.ttf`。
-
 此处 `readme.md` 预留用于撰写以下规范：
 
 1. 资源文件分类规则。

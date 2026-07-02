@@ -33,11 +33,6 @@ except ModuleNotFoundError:
         normalize_hero_rank_score,
     )
 
-try:
-    from overstats.src.modules.font_utils import load_chinese_font, load_summary_style_fonts
-except ModuleNotFoundError:
-    from src.modules.font_utils import load_chinese_font, load_summary_style_fonts
-
 from .render import (
     RenderedImage,
     _cached_path_for_url,
@@ -45,7 +40,9 @@ from .render import (
     _find_hero,
     _find_map,
     _fit_text,
+    _font,
     _font_chinese,
+    _font_meta,
     _font_num_display,
     _hero_icon_url,
     _load_role_icon_asset,
@@ -139,10 +136,10 @@ def _truncate(draw: Any, text: Any, font: Any, max_width: int, suffix: str = "..
 
 def _fit_font_for_badge(draw: Any, text: str, max_text_width: int, max_size: int, min_size: int) -> Any:
     for size in range(max_size, min_size - 1, -1):
-        font = load_chinese_font(size)
+        font = _font(size)
         if _text_size(draw, text, font)[0] <= max_text_width:
             return font
-    return load_chinese_font(min_size)
+    return _font(min_size)
 
 
 def _draw_title_badges(
@@ -189,9 +186,8 @@ def decorate_image_with_player_title_header(base_image: Any, player_name: str, b
     canvas = Image.new("RGBA", (source.width, source.height + header_height), (18, 22, 30, 255))
     canvas.paste(source, (0, header_height), source)
     draw = ImageDraw.Draw(canvas)
-    header_fonts = load_summary_style_fonts(1.0)
-    font_name = header_fonts["title"]
-    font_sub = header_fonts["body_sm"]
+    font_name = _font_chinese(32)
+    font_sub = _font_chinese(18)
 
     raw_name = str(player_name or "").strip()
     display_name = raw_name
@@ -291,16 +287,6 @@ def _hero_attr_lookup(config: Dict[str, Any]) -> dict[str, dict[str, Any]]:
     return lookup
 
 
-def _global_attr_lookup(config: Dict[str, Any]) -> dict[str, Any]:
-    """按 valueGuid 建立全局 fallback 映射，用于英雄特定查找失败时兜底。"""
-    lookup: dict[str, Any] = {}
-    for item in config.get("heroAttrList", []) or []:
-        value_guid = str(item.get("valueGuid") or "")
-        if value_guid and value_guid not in lookup:
-            lookup[value_guid] = item
-    return lookup
-
-
 def _build_hero_average_comparison(
     config: Dict[str, Any],
     hero_guid: Any,
@@ -323,32 +309,17 @@ def _build_hero_average_comparison(
         ratio_stat_guids,
         rank_bucket is not None,
     )
-    fallback_references = {}
-    if rank_bucket is not None:
-        fallback_references = get_cached_statmap_summary(
-            MATCH_STATS_DB,
-            hero_guid,
-            stat_guids,
-            None,
-            ratio_stat_guids,
-            False,
-        )
     attr_lookup = _hero_attr_lookup(config).get(hero_guid, {})
-    global_attr_lookup = _global_attr_lookup(config)
     results = {}
     for guid, raw_value in (stat_map or {}).items():
         guid = str(guid)
         if guid in HERO_AVG_SKIP_VALUE_GUIDS:
             continue
-        attr = attr_lookup.get(guid) or global_attr_lookup.get(guid) or {}
+        attr = attr_lookup.get(guid, {})
         normalized = normalize_dashen_hero_stat_value(raw_value, user_time_sec, attr.get("valueText", ""), guid)
         if normalized is None:
             continue
-        ref = (
-            references.get((guid, rank_bucket))
-            or references.get((guid, None))
-            or fallback_references.get((guid, None))
-        )
+        ref = references.get((guid, rank_bucket)) or references.get((guid, None))
         if not ref:
             continue
         if guid == DEATH_GUID:
@@ -381,25 +352,18 @@ def _hero_stat_rows(
     if not hero_guid or not stat_map:
         return []
     attr_lookup = _hero_attr_lookup(config).get(hero_guid, {})
-    global_attr_lookup = _global_attr_lookup(config)
-    # API heroList items carry time as top-level "userTimeSec"; fall back to statMap GAME_TIME_GUID
-    user_time_sec = (
-        hero.get("userTimeSec")
-        or stat_map.get(GAME_TIME_GUID)
-        or 0
-    )
     compare_map = _build_hero_average_comparison(
         config,
         hero_guid,
         stat_map,
-        user_time_sec,
+        stat_map.get(GAME_TIME_GUID, 0),
         (rank_info or {}).get("rankScore"),
     )
     preferred_order = {KILL_GUID: 0, ASSIST_GUID: 1, DEATH_GUID: 2, FINAL_HIT_GUID: 3}
     rows = []
     for raw_guid, raw_value in stat_map.items():
         guid = str(raw_guid)
-        attr = attr_lookup.get(guid) or global_attr_lookup.get(guid) or {}
+        attr = attr_lookup.get(guid, {})
         label = str(attr.get("valueText") or guid)
         value_type = str(attr.get("valueType") or "")
         compare = compare_map.get(guid) or {}
@@ -417,10 +381,9 @@ def _hero_stat_rows(
     def sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
         if item["guid"] in preferred_order:
             return (0, preferred_order[item["guid"]], item["guid"])
-        vt = item["value_type"]
-        if "通用" in vt or "common" in vt.lower():
+        if "common" in item["value_type"].lower():
             group = 1
-        elif "特色" in vt or "special" in vt.lower():
+        elif "special" in item["value_type"].lower():
             group = 2
         else:
             group = 3
@@ -456,14 +419,7 @@ def render_player_hero_detail(
 
     config = _load_ow_config()
     hero_list = list(player_detail.get("heroList") or [])
-    hero_list.sort(
-        key=lambda item: float(
-            item.get("userTimeSec")
-            or (item.get("statMap") or {}).get(GAME_TIME_GUID)
-            or 0
-        ),
-        reverse=True,
-    )
+    hero_list.sort(key=lambda item: float((item.get("statMap") or {}).get(GAME_TIME_GUID, 0) or 0), reverse=True)
 
     card_width = 1140
     page_padding = 28
@@ -518,14 +474,10 @@ def render_player_hero_detail(
             hero_text_x = box[0] + 144
         else:
             draw.rounded_rectangle((box[0] + 92, box[1] + 19, box[0] + 162, box[1] + 45), radius=12, fill=role_fill)
-            draw.text((box[0] + 111, box[1] + 22), (role_type[:1] or "?").upper(), font=_font_chinese(16), fill=(255, 255, 255))
+            draw.text((box[0] + 111, box[1] + 22), (role_type[:1] or "?").upper(), font=_font_meta(16), fill=(255, 255, 255))
         draw.text((hero_text_x, box[1] + 14), hero_name, font=_font_chinese(26), fill=(250, 252, 255, 255))
 
-        hero_time = float(
-            hero.get("userTimeSec")
-            or (hero.get("statMap") or {}).get(GAME_TIME_GUID)
-            or 0
-        )
+        hero_time = float((hero.get("statMap") or {}).get(GAME_TIME_GUID, 0) or 0)
         if match_game_time_sec:
             try:
                 ratio = max(0.0, min(1.0, hero_time / float(match_game_time_sec)))
@@ -618,14 +570,7 @@ def render_all_players_waterfall(
 
     def _player_heroes(player: dict[str, Any]) -> list[dict[str, Any]]:
         heroes = [hero for hero in list(player.get("heroList") or []) if isinstance(hero, dict)]
-        heroes.sort(
-            key=lambda item: float(
-                item.get("userTimeSec")
-                or (item.get("statMap") or {}).get(GAME_TIME_GUID)
-                or 0
-            ),
-            reverse=True,
-        )
+        heroes.sort(key=lambda item: float((item.get("statMap") or {}).get(GAME_TIME_GUID, 0) or 0), reverse=True)
         return heroes
 
     def _played_roles(player: dict[str, Any]) -> list[str]:
@@ -711,7 +656,7 @@ def render_all_players_waterfall(
             return
         short, outline, fill = role_badges.get(role, ("?", (190, 196, 210, 255), (50, 54, 66, 255)))
         draw.rounded_rectangle((x0, y0, x0 + 20, y0 + 20), radius=5, fill=fill, outline=outline, width=1)
-        draw.text((x0 + 10, y0 + 3), short, font=_font_chinese(14), fill=outline, anchor="ma")
+        draw.text((x0 + 10, y0 + 3), short, font=_font_meta(14), fill=outline, anchor="ma")
 
     def _draw_player_column(player: dict[str, Any], x: int, y: int, team_color: tuple[int, int, int, int], row_h: int) -> None:
         draw.rectangle((x, y, x + player_w, y + row_h), fill=card_color, outline=(70, 74, 92, 255), width=1)
@@ -746,7 +691,7 @@ def render_all_players_waterfall(
         info_w = max(72, info_right - name_x)
         draw.text((name_x, y + 8), _fit_text(draw, display_name, _font_chinese(20), info_w), font=_font_chinese(20), fill=text_main)
         if battle_num:
-            draw.text((name_x, y + 32), _fit_text(draw, battle_num, _font_chinese(14), info_w), font=_font_chinese(14), fill=text_dim)
+            draw.text((name_x, y + 32), _fit_text(draw, battle_num, _font_meta(14), info_w), font=_font_meta(14), fill=text_dim)
 
         title_y = y + header_h
         title_list = _group_titles(player.get("bnet_id"))
@@ -795,9 +740,9 @@ def render_all_players_waterfall(
                 draw.text((kad_x, current_y + 4), text, font=_font_num_display(13), fill=fill)
                 kad_x += _measure(draw, text, _font_num_display(13))
 
-            play_seconds = float(hero.get("userTimeSec") or stat_map.get(GAME_TIME_GUID) or 0)
+            play_seconds = float(stat_map.get(GAME_TIME_GUID, 0) or 0)
             playtime_text = f"游戏时间{_format_seconds(play_seconds)}秒 | 占比{_format_ratio(play_seconds)}"
-            draw.text((x + 14, current_y + 28), _fit_text(draw, playtime_text, _font_chinese(12), player_w - 28), font=_font_chinese(12), fill=text_dim)
+            draw.text((x + 14, current_y + 28), _fit_text(draw, playtime_text, _font_meta(12), player_w - 28), font=_font_meta(12), fill=text_dim)
             current_y += hero_header_h
 
             stat_cell_w = (player_w - 20 - stat_gap) // 2
@@ -859,7 +804,7 @@ def _render_all_players_waterfall_readable(
         image = Image.new("RGBA", (960, 180), (18, 22, 30, 255))
         draw = ImageDraw.Draw(image, "RGBA")
         draw.text((32, 42), "No detailed player data available", font=_font_chinese(28), fill=(255, 255, 255, 255))
-        draw.text((32, 98), "No public hero detail data was captured for this match.", font=_font_chinese(18), fill=(180, 188, 202, 255))
+        draw.text((32, 98), "No public hero detail data was captured for this match.", font=_font_meta(18), fill=(180, 188, 202, 255))
         return _pil_to_rendered(image)
 
     pad = 28
@@ -902,14 +847,7 @@ def _render_all_players_waterfall_readable(
 
     def _player_heroes(player: dict[str, Any]) -> list[dict[str, Any]]:
         heroes = [hero for hero in list(player.get("heroList") or []) if isinstance(hero, dict)]
-        heroes.sort(
-            key=lambda item: float(
-                item.get("userTimeSec")
-                or (item.get("statMap") or {}).get(GAME_TIME_GUID)
-                or 0
-            ),
-            reverse=True,
-        )
+        heroes.sort(key=lambda item: float((item.get("statMap") or {}).get(GAME_TIME_GUID, 0) or 0), reverse=True)
         return heroes
 
     def _played_roles(player: dict[str, Any]) -> list[str]:
@@ -998,7 +936,7 @@ def _render_all_players_waterfall_readable(
             return
         short, outline, fill = role_badges.get(role, ("?", (190, 196, 210, 255), (50, 54, 66, 255)))
         draw.rounded_rectangle((x0, y0, x0 + 22, y0 + 22), radius=6, fill=fill, outline=outline, width=1)
-        draw.text((x0 + 11, y0 + 3), short, font=_font_chinese(15), fill=outline, anchor="ma")
+        draw.text((x0 + 11, y0 + 3), short, font=_font_meta(15), fill=outline, anchor="ma")
 
     def _draw_player_card(draw: Any, image: Any, player: dict[str, Any], x: int, y: int, row_h: int, team_color: tuple[int, int, int, int]) -> None:
         draw.rounded_rectangle((x, y, x + player_w, y + row_h), radius=18, fill=card_color, outline=(70, 74, 92, 255), width=1)
@@ -1032,7 +970,7 @@ def _render_all_players_waterfall_readable(
         info_w = max(72, info_right - name_x)
         draw.text((name_x, y + 10), _fit_text(draw, display_name, _font_chinese(22), info_w), font=_font_chinese(22), fill=text_main)
         if battle_num:
-            draw.text((name_x, y + 38), _fit_text(draw, battle_num, _font_chinese(15), info_w), font=_font_chinese(15), fill=text_dim)
+            draw.text((name_x, y + 38), _fit_text(draw, battle_num, _font_meta(15), info_w), font=_font_meta(15), fill=text_dim)
 
         title_y = y + header_h
         title_list = _group_titles(player.get("bnet_id"))
@@ -1083,9 +1021,9 @@ def _render_all_players_waterfall_readable(
                 draw.text((kad_x, current_y + 8), text, font=kad_font, fill=fill)
                 kad_x += _measure(draw, text, kad_font)
 
-            play_seconds = float(hero.get("userTimeSec") or stat_map.get(GAME_TIME_GUID) or 0)
+            play_seconds = float(stat_map.get(GAME_TIME_GUID, 0) or 0)
             playtime_text = f"TIME {_format_seconds(play_seconds)} | USAGE {_format_ratio(play_seconds)}"
-            draw.text((x + 18, current_y + 33), _fit_text(draw, playtime_text, _font_chinese(13), player_w - 36), font=_font_chinese(13), fill=text_dim)
+            draw.text((x + 18, current_y + 33), _fit_text(draw, playtime_text, _font_meta(13), player_w - 36), font=_font_meta(13), fill=text_dim)
             current_y += hero_header_h
 
             stat_cell_w = (player_w - 24 - stat_gap) // 2
@@ -1115,8 +1053,8 @@ def _render_all_players_waterfall_readable(
             return top
         label_box_w = 168
         draw.rounded_rectangle((pad, top, pad + label_box_w, top + 32), radius=12, fill=team_color)
-        draw.text((pad + 16, top + 6), label, font=_font_chinese(20), fill=(255, 255, 255, 255))
-        draw.text((pad + label_box_w + 12, top + 7), f"{len(team_players)} PLAYERS", font=_font_chinese(18), fill=text_dim)
+        draw.text((pad + 16, top + 6), label, font=_font_meta(20), fill=(255, 255, 255, 255))
+        draw.text((pad + label_box_w + 12, top + 7), f"{len(team_players)} PLAYERS", font=_font_meta(18), fill=text_dim)
         line_y = top + 16
         draw.line((pad + label_box_w + 150, line_y, image_w - pad, line_y), fill=section_line, width=2)
 
@@ -1384,14 +1322,14 @@ def render_analysis_report(
             red_black_text += f"\n亮点补充：{outstanding}"
 
     sections = [
-        {"type": "score", "title": "🎯焦点玩家", "id": json_data.get("player_id", "未知"), "score": json_data.get("score", "N/A")},
-        {"type": "text", "title": "📝一句话总结", "text": json_data.get("general_summary", "")},
-        {"type": "text", "title": "⚔️胜负关键", "text": f"胜负手：{json_data.get('key_to_win_loss', '')}"},
-        {"type": "text", "title": "📊关键数据红黑榜", "text": red_black_text},
-        {"type": "text", "title": "📋最终局评", "text": json_data.get("summary", "")},
-        {"type": "carry_index", "title": "🏆全场表现评分", "data": json_data.get("carry_index_data", [])},
-        {"type": "attributes", "title": "🔍团队属性与综合评价", "attr": json_data.get("attribute_scores", {}), "evaluation": json_data.get("evaluation", "")},
-        {"type": "text", "title": "💡EXTRA", "text": json_data.get("extra", "")},
+        {"type": "score", "title": "□ 焦点玩家", "id": json_data.get("player_id", "未知"), "score": json_data.get("score", "N/A")},
+        {"type": "text", "title": "□ 一句话总结", "text": json_data.get("general_summary", "")},
+        {"type": "text", "title": "□ 胜负关键", "text": f"胜负手：{json_data.get('key_to_win_loss', '')}"},
+        {"type": "text", "title": "□ 关键数据红黑榜", "text": red_black_text},
+        {"type": "text", "title": "□ 最终局势", "text": json_data.get("summary", "")},
+        {"type": "carry_index", "title": "□ 全场表现评分", "data": json_data.get("carry_index_data", [])},
+        {"type": "attributes", "title": "□ 团队属性与综合评价", "attr": json_data.get("attribute_scores", {}), "evaluation": json_data.get("evaluation", "")},
+        {"type": "text", "title": "□ EXTRA", "text": json_data.get("extra", "")},
     ]
 
     total_height = 120

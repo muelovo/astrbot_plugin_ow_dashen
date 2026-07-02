@@ -22,10 +22,6 @@
     {
       "img": "https://img.166.net/gameyw-misc/opd/squash/20260410/151358-zfs9lk4rey.png",
       "url": "https://act.ds.163.com/4700263e9d28a79b/69b376c045d19f02779255ff"
-    },
-    {
-      "img": "https://img.166.net/gameyw-misc/opd/squash/20260410/180119-391guawzs6.png",
-      "url": "https://s.163.com/3mvfjI"
     }
   ],
   "isOpenCustomerFreind": false,
@@ -1887,7 +1883,8 @@
       "icon": "https://img.166.net/gameyw-misc/opd/squash/20260210/154929-0itnmsj67r.png",
       "destinyHeroBanner": "https://img.166.net/gameyw-misc/opd/squash/20260410/095001-cf0t62r8e7.png",
       "smallIconUrl": "https://img.166.net/gameyw-misc/opd/squash/20260210/154931-6pmybsidqz.png",
-      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105108-chb0t9nfud.png"
+      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105108-chb0t9nfud.png",
+      "ddHeroIcon": "https://img.166.net/gameyw-misc/opd/squash/20260509/142502-panb4shy6m.png"
     },
     {
       "id": "0x02E00000000004C4",
@@ -1898,7 +1895,8 @@
       "icon": "https://img.166.net/gameyw-misc/opd/squash/20260210/154925-bznq61rkgv.png",
       "destinyHeroBanner": "https://img.166.net/gameyw-misc/opd/squash/20260410/095001-c46hsueoz7.png",
       "smallIconUrl": "https://img.166.net/gameyw-misc/opd/squash/20260210/154927-5j4q19szme.png",
-      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/110616-jlmfiwbuvc.png"
+      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/110616-jlmfiwbuvc.png",
+      "ddHeroIcon": "https://img.166.net/gameyw-misc/opd/squash/20260509/142317-ezgp0bcq31.png"
     },
     {
       "id": "0x02E00000000004E3",
@@ -1909,7 +1907,8 @@
       "icon": "https://img.166.net/gameyw-misc/opd/squash/20260210/154925-ud2ory9fzk.png",
       "smallIconUrl": "https://img.166.net/gameyw-misc/opd/squash/20260210/154925-d31sy498ir.png",
       "destinyHeroBanner": "https://img.166.net/gameyw-misc/opd/squash/20260410/095001-4jz1p8nusb.png",
-      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105115-w57iahe8jy.png"
+      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105115-w57iahe8jy.png",
+      "ddHeroIcon": "https://img.166.net/gameyw-misc/opd/squash/20260509/142317-e5a2d3kg4y.png"
     },
     {
       "id": "0x02E0000000000516",
@@ -1920,7 +1919,8 @@
       "icon": "https://img.166.net/gameyw-misc/opd/squash/20260210/154928-n04kb6dpzt.png",
       "smallIconUrl": "https://img.166.net/gameyw-misc/opd/squash/20260210/154930-kt97nez3cm.png",
       "destinyHeroBanner": "https://img.166.net/gameyw-misc/opd/squash/20260410/095001-wbe54jhf86.png",
-      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105113-4zjs0q5thc.png"
+      "cover": "https://img.166.net/gameyw-misc/opd/squash/20260211/105113-4zjs0q5thc.png",
+      "ddHeroIcon": "https://img.166.net/gameyw-misc/opd/squash/20260509/142620-wstuzoeqia.png"
     },
     {
       "id": "0x02E0000000000472",
@@ -1945,7 +1945,7 @@
       "smallIconUrl": "https://img.166.net/gameyw-misc/opd/squash/20260409/093806-jsn02kgu8a.png",
       "cover": "",
       "destinyHeroBanner": "",
-      "ddHeroIcon": ""
+      "ddHeroIcon": "https://img.166.net/gameyw-misc/opd/squash/20260509/142317-5vpiksb4hf.png"
     }
   ],
   "mapList": [
@@ -18748,6 +18748,34 @@
     {
       "heroGuid": "207165582859044050",
       "heroName": "西拉",
+      "valueGuid": "603482350067650353",
+      "valueText": "震地手雷消灭",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044050",
+      "heroName": "西拉",
+      "valueGuid": "603482350067650342",
+      "valueText": "追踪弹命中率",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044050",
+      "heroName": "西拉",
+      "valueGuid": "603482350067650349",
+      "valueText": "开路先锋消灭",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044050",
+      "heroName": "西拉",
+      "valueGuid": "603482350067646511",
+      "valueText": "武器命中率",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044050",
+      "heroName": "西拉",
       "valueGuid": "603482350067648623",
       "valueText": "英雄获胜",
       "valueType": "通用数据"
@@ -18765,6 +18793,34 @@
       "valueGuid": "603482350067646497",
       "valueText": "累计游戏时间",
       "valueType": "通用数据"
+    },
+    {
+      "heroGuid": "207165582859044036",
+      "heroName": "金驭",
+      "valueGuid": "603482350067650029",
+      "valueText": "全景牢笼命中",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044036",
+      "heroName": "金驭",
+      "valueGuid": "603482350067650356",
+      "valueText": "武器光束命中率",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044036",
+      "heroName": "金驭",
+      "valueGuid": "603482350067650030",
+      "valueText": "爆能水晶伤害",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044036",
+      "heroName": "金驭",
+      "valueGuid": "603482350067647462",
+      "valueText": "自我治疗量",
+      "valueType": "特色数据"
     },
     {
       "heroGuid": "207165582859044067",
@@ -18911,6 +18967,13 @@
       "heroName": "埃姆雷",
       "valueGuid": "603482350067650218",
       "valueText": "虹吸冲击枪伤害量",
+      "valueType": "特色数据"
+    },
+    {
+      "heroGuid": "207165582859044056",
+      "heroName": "埃姆雷",
+      "valueGuid": "603482350067646511",
+      "valueText": "武器命中率",
       "valueType": "特色数据"
     },
     {

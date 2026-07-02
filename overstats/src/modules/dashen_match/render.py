@@ -10,24 +10,17 @@ from typing import Any, Dict, Sequence
 from urllib.parse import urlparse
 
 try:
-    from overstats.src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        load_chinese_font,
-        load_resource_font,
-        load_summary_style_fonts,
-    )
     from overstats.src.modules.query_tool import get_cached_asset_path, load_query_tool
 except ModuleNotFoundError:
-    from src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        load_chinese_font,
-        load_resource_font,
-        load_summary_style_fonts,
-    )
     from src.modules.query_tool import get_cached_asset_path, load_query_tool
 
+try:
+    from overstats.src.modules.font_resolver import load_font, resolve_resource_dir
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font, resolve_resource_dir
 
-RESOURCE_DIR = _FONT_RES_DIR
+
+RESOURCE_DIR = resolve_resource_dir()
 ASSET_MANIFEST_PATH = RESOURCE_DIR / "query_tool_assets" / "assets_manifest.json"
 _ASSET_MANIFEST_CACHE: Dict[str, Any] | None = None
 ROLE_ICON_FILENAMES = {
@@ -59,6 +52,8 @@ def render_match_list(
     *,
     title: str = "大神对局列表",
     full_id: str = "",
+    footer_lines: Sequence[str] | None = None,
+    hint_text: str | None = None,
 ) -> RenderedImage:
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -68,26 +63,30 @@ def render_match_list(
     config = _load_ow_config()
     recent_matches = list(matches or [])[:20]
     row_h = 60
-    footer_h = 58
+    default_hint_text = "回复此图并@机器人发送 1 / 1* / 1**，可查看单场详情 / 全员详细 / AI锐评"
+    rendered_footer_lines = [str(line).strip() for line in (footer_lines or []) if str(line).strip()]
+    effective_hint_text = default_hint_text if hint_text is None else str(hint_text or "").strip()
+    if effective_hint_text:
+        rendered_footer_lines.append(effective_hint_text)
+    footer_h = max(58, 24 + 22 * max(len(rendered_footer_lines), 1))
     img_h = row_h * max(len(recent_matches), 1) + 70 + footer_h
     img = Image.new("RGBA", (700, img_h), (22, 23, 30, 255))
     draw = ImageDraw.Draw(img, "RGBA")
 
-    ui_fonts = load_summary_style_fonts(1.0)
-    font_title = ui_fonts["title_md"]
-    font = ui_fonts["body"]
-    font_sm = ui_fonts["body_sm"]
+    font_title = _font(24)
+    font = _font(18)
+    font_sm = _font(16)
 
     title_text = title
-    if full_id:
-        title_text = f"{full_id} \u8fd1\u671f\u5bf9\u5c40\u5217\u8868"
+    if full_id and title == "大神对局列表":
+        title_text = f"{full_id} 近期对局列表"
     draw.text((20, 15), title_text, fill=(0, 255, 200), font=font_title)
 
     total_recent = len(recent_matches)
     wins_recent = sum(1 for match in recent_matches if match.get("matchRet") == 1)
     win_rate = (wins_recent / total_recent * 100) if total_recent else 0
     wr_color = (100, 255, 120) if win_rate >= 50 else (255, 100, 100)
-    wr_label = f"\u8fd1 {total_recent} \u573a\u80dc\u7387:"
+    wr_label = f"近 {total_recent} 场胜率:"
     draw.text((430, 18), wr_label, fill=(220, 220, 220), font=font)
     draw.text((430 + _text_width(draw, wr_label, font) + 10, 15), f"{win_rate:.1f}%", fill=wr_color, font=font_title)
 
@@ -101,8 +100,13 @@ def render_match_list(
 
     footer_top = img_h - footer_h
     draw.line([(20, footer_top), (680, footer_top)], fill=(60, 67, 82, 255), width=1)
-    hint_text = "回复此图并@机器人发送 1 / 1* / 1**，可查看单场详情 / 全员详细 / AI锐评"
-    draw.text((20, footer_top + 16), _fit_text(draw, hint_text, font_sm, 660), fill=(190, 198, 210), font=font_sm)
+    for line_index, line_text in enumerate(rendered_footer_lines or [default_hint_text]):
+        draw.text(
+            (20, footer_top + 16 + line_index * 22),
+            _fit_text(draw, line_text, font_sm, 660),
+            fill=(190, 198, 210),
+            font=font_sm,
+        )
 
     output = BytesIO()
     img.convert("RGB").save(output, format="PNG", optimize=True)
@@ -162,15 +166,13 @@ def _render_scoreboard_match_detail(
         ImageDraw.Draw(img).rectangle((1125, 0, 1825, 994), fill=(32, 35, 45, 255))
 
     draw = ImageDraw.Draw(img, "RGBA")
-    ui_fonts = load_summary_style_fonts(1.0)
     font_en_large = _font_en_oblique(80)
-    font_cn = ui_fonts["name"]
-    font_meta = ui_fonts["body_sm"]
-    font_cn_body = ui_fonts["body"]
+    font_cn = _font_chinese(40)
+    font_meta = _font_meta(25)
 
     map_guid = data.get("mapGuid") or source_match.get("mapGuid")
     map_info = _find_map(config, map_guid)
-    map_name = map_info.get("name") or str(map_guid or "\u672a\u77e5\u5730\u56fe")
+    map_name = map_info.get("name") or str(map_guid or "未知地图")
     _paste_map_image(img, map_info, (1125, 0), (700, 440))
 
     match_ret = data.get("matchRet", source_match.get("matchRet"))
@@ -191,13 +193,13 @@ def _render_scoreboard_match_detail(
     else:
         date_text = _format_begin_ts(source_match.get("beginTs"))
     mode_label, _ = _mode_label({**source_match, **data})
-    font_mode_value = font_cn_body
+    font_mode_value = _font_chinese(25) if re.search(r"[一-鿿]", str(mode_label)) else font_meta
     font_num_display = _font_num_display(25)
 
-    _draw_labeled_value(draw, 1165, 570, "\u00b7 FINAL SCORE: ", f"{team_score} VS {opponent_score}", font_meta, font_num_display, fill="white")
-    _draw_labeled_value(draw, 1165, 610, "\u00b7 DATE: ", date_text, font_meta, font_num_display, fill="white")
-    _draw_labeled_value(draw, 1165, 650, "\u00b7 GAME MODE: ", str(mode_label), font_meta, font_mode_value, fill="white")
-    _draw_labeled_value(draw, 1165, 690, "\u00b7 GAME LENGTH: ", _format_duration(game_time_sec), font_meta, font_num_display, fill="white")
+    _draw_labeled_value(draw, 1165, 570, "· FINAL SCORE: ", f"{team_score} VS {opponent_score}", font_meta, font_num_display, fill="white")
+    _draw_labeled_value(draw, 1165, 610, "· DATE: ", date_text, font_meta, font_num_display, fill="white")
+    _draw_labeled_value(draw, 1165, 650, "· GAME MODE: ", str(mode_label), font_meta, font_mode_value, fill="white")
+    _draw_labeled_value(draw, 1165, 690, "· GAME LENGTH: ", _format_duration(game_time_sec), font_meta, font_num_display, fill="white")
     _draw_ban_heroes(img, draw, data, config)
 
     teammate_list = list(data.get("teammateList") or [])
@@ -449,14 +451,13 @@ def _render_fight_match_detail(
     image_h = top_h + max(len(rounds), 1) * (round_h + round_gap) + 24
     img = Image.new("RGBA", (image_w, image_h), (22, 24, 32, 255))
     draw = ImageDraw.Draw(img)
-    ui_fonts = load_summary_style_fonts(1.0)
     font_title = _font_en(46)
-    font_en = ui_fonts["body_sm"]
-    font_sm = ui_fonts["body_sm"]
-    font_tiny = ui_fonts["caption_sm"]
+    font_en = _font_meta(22)
+    font_sm = _font_chinese(17)
+    font_tiny = _font_chinese(12)
 
     map_guid = total_count.get("mapGuid") or source_match.get("mapGuid")
-    map_name = (_find_map(config, map_guid) or {}).get("name") or str(map_guid or "\u672a\u77e5\u5730\u56fe")
+    map_name = (_find_map(config, map_guid) or {}).get("name") or str(map_guid or "未知地图")
     score_text = f"{total_count.get('teamScore', source_match.get('teamScore', 0))} : {total_count.get('opponentScore', source_match.get('opponentScore', 0))}"
     draw.rectangle((0, 0, image_w, top_h), fill=(28, 31, 42, 255))
     draw.text((32, 20), "STADIUM MATCH", font=font_title, fill=(255, 190, 60, 255))
@@ -468,24 +469,25 @@ def _render_fight_match_detail(
         round_map = (_find_map(config, round_data.get("mapGuid") or map_guid) or {}).get("name") or map_name
         draw.rectangle((24, y, left_w - 14, y + round_h - 4), fill=(32, 38, 53, 255), outline=(255, 190, 60, 120), width=2)
         draw.text((44, y + 24), _fit_text(draw, round_map, font_sm, 160), font=font_sm, fill=(245, 247, 250, 255))
-        draw.text((44, y + 56), f"\u7b2c {idx} \u56de\u5408", font=font_sm, fill=(255, 190, 60, 255))
+        draw.text((44, y + 56), f"第 {idx} 回合", font=font_sm, fill=(255, 190, 60, 255))
         draw.text((44, y + 92), f"{round_data.get('teamScore', 0)} : {round_data.get('opponentScore', 0)}", font=font_title, fill=(245, 247, 250, 255))
         draw.text((44, y + 150), _format_duration(round_data.get("gameTimeSec")), font=font_en, fill=(178, 184, 198, 255))
 
         draw.rectangle((left_w, y, image_w - 24, y + round_header_h), fill=(40, 44, 58, 255))
         for label, x in [
             ("RANK", 246),
-            ("\u82f1\u96c4", 326),
-            ("\u73a9\u5bb6", 386),
+            ("英雄", 326),
+            ("玩家", 386),
             ("KAD", 568),
-            ("\u4f24\u5bb3", 660),
-            ("\u6cbb\u7597", 762),
-            ("\u627f\u4f24", 864),
-            ("\u8d44\u91d1", 966),
-            ("\u5f02\u80fd", 1072),
-            ("\u88c5\u5907", 1266),
+            ("伤害", 660),
+            ("治疗", 762),
+            ("承伤", 864),
+            ("资金", 966),
+            ("异能", 1072),
+            ("装备", 1266),
         ]:
-            draw.text((x, y + 9), label, font=font_sm, fill=(178, 184, 198, 255))
+            label_font = font_en if str(label).isascii() else font_sm
+            draw.text((x, y + 9), label, font=label_font, fill=(178, 184, 198, 255))
 
         allies = list(round_data.get("teammateList") or [])
         enemies = list(round_data.get("enemyList") or [])
@@ -511,7 +513,7 @@ def _draw_match_row(draw: Any, img: Any, config: Dict[str, Any], match: Dict[str
     _draw_map_background(img, map_info := _find_map(config, match.get("mapGuid")), y)
     _draw_row_accent(draw, y, match)
 
-    map_name = map_info.get("name") or "\u672a\u77e5\u5730\u56fe"
+    map_name = map_info.get("name") or "未知地图"
     mode, mode_color = _mode_label(match)
     begin_text = _format_begin_ts(match.get("beginTs"))
     result_text, result_color = _result_label(match.get("matchRet"))
@@ -557,21 +559,22 @@ def _draw_detail_team(
     header_y = y + 42
     draw.rectangle((34, header_y, 1146, header_y + 34), fill=(35, 38, 50, 255))
     headers = [
-        ("\u82f1\u96c4", 82),
-        ("\u73a9\u5bb6", 166),
+        ("英雄", 82),
+        ("玩家", 166),
         ("K / A / D", 434),
-        ("\u4f24\u5bb3", 560),
-        ("\u6cbb\u7597", 682),
-        ("\u627f\u4f24", 804),
-        ("\u6bb5\u4f4d", 930),
+        ("伤害", 560),
+        ("治疗", 682),
+        ("承伤", 804),
+        ("段位", 930),
     ]
     for text, x in headers:
-        draw.text((x, header_y + 8), text, fill=(178, 184, 198), font=font_sm)
+        header_font = _font_meta(max(15, int(getattr(font_sm, "size", 16)))) if str(text).isascii() else font_sm
+        draw.text((x, header_y + 8), text, fill=(178, 184, 198), font=header_font)
 
     row_y = header_y + 34
     if not players:
         draw.rectangle((34, row_y, 1146, row_y + 54), fill=(28, 31, 42, 255))
-        draw.text((58, row_y + 16), "\u6ca1\u6709\u73a9\u5bb6\u6570\u636e", fill=(178, 184, 198), font=font_sm)
+        draw.text((58, row_y + 16), "没有玩家数据", fill=(178, 184, 198), font=font_sm)
         return
 
     for player in players:
@@ -1215,10 +1218,8 @@ def _draw_perks(draw: Any, img: Any, config: Dict[str, Any], perks: Sequence[Dic
                 inner,
             )
             if not pasted:
-                perk_label = str(perk_info.get("name") or candidates[0])[:6]
-                perk_font = load_chinese_font(max(10, size - 6))
-                label = _fit_text(draw, perk_label, perk_font, size - 6)
-                draw.text((x + 3, py + size // 2 - 6), label, font=perk_font, fill=(230, 235, 245))
+                label = _fit_text(draw, str(perk_info.get("name") or candidates[0])[:6], _font(10), size - 6)
+                draw.text((x + 3, py + size // 2 - 6), label, font=_font(10), fill=(230, 235, 245))
 
 
 def _extract_player_perks(player: Dict[str, Any]) -> list[Any]:
@@ -1342,20 +1343,20 @@ def _mode_label(match: Dict[str, Any]) -> tuple[str, tuple[int, int, int]]:
     game_mode = str(match.get("gameMode") or match.get("instanceType") or "")
     lower = game_mode.lower()
     if "sportfight" in lower:
-        return "\u89d2\u6597\u7ade\u6280", (255, 190, 60)
+        return "角斗竞技", (255, 190, 60)
     if "quickfight" in lower or "leisurefight" in lower or ("fight" in lower and not rank_info):
-        return "\u89d2\u6597\u5feb\u901f", (180, 255, 70)
+        return "角斗快速", (180, 255, 70)
     if rank_info or "sport" in lower or "rank" in lower:
-        return "\u7ade\u6280", (255, 80, 80)
-    return "\u5feb\u901f", (0, 200, 255)
+        return "竞技", (255, 80, 80)
+    return "快速", (0, 200, 255)
 
 
 def _result_label(value: Any) -> tuple[str, tuple[int, int, int]]:
     if value == 1:
-        return "\u80dc\u5229", (100, 255, 120)
+        return "胜利", (100, 255, 120)
     if value == 0:
-        return "\u5e73\u5c40", (255, 255, 150)
-    return "\u6218\u8d25", (255, 100, 100)
+        return "平局", (255, 255, 150)
+    return "战败", (255, 100, 100)
 
 
 def _format_begin_ts(value: Any) -> str:
@@ -1742,19 +1743,19 @@ def _safe_int(value: Any) -> int:
 
 def _role_label(player: Dict[str, Any], hero_info: Dict[str, Any]) -> str:
     return {
-        "tank": "\u91cd\u88c5",
-        "dps": "\u8f93\u51fa",
-        "healer": "\u652f\u63f4",
-        "open": "\u5f00\u653e",
+        "tank": "重装",
+        "dps": "输出",
+        "healer": "支援",
+        "open": "开放",
     }.get(_role_type(player, hero_info), "")
 
 
 def _role_style(role: str) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int], tuple[int, int, int, int], str]:
     styles = {
-        "tank": ((76, 157, 255, 220), (185, 225, 255, 255), (255, 255, 255, 255), "\u91cd"),
-        "dps": ((255, 122, 94, 220), (255, 220, 197, 255), (255, 255, 255, 255), "\u8f93"),
-        "healer": ((88, 199, 126, 220), (220, 255, 228, 255), (255, 255, 255, 255), "\u63f4"),
-        "open": ((164, 123, 255, 220), (234, 223, 255, 255), (255, 255, 255, 255), "\u5f00"),
+        "tank": ((76, 157, 255, 220), (185, 225, 255, 255), (255, 255, 255, 255), "重"),
+        "dps": ((255, 122, 94, 220), (255, 220, 197, 255), (255, 255, 255, 255), "输"),
+        "healer": ((88, 199, 126, 220), (220, 255, 228, 255), (255, 255, 255, 255), "援"),
+        "open": ((164, 123, 255, 220), (234, 223, 255, 255), (255, 255, 255, 255), "开"),
     }
     return styles.get(role, ((90, 96, 112, 220), (200, 205, 218, 255), (255, 255, 255, 255), "?"))
 
@@ -1769,7 +1770,7 @@ def _rank_label(rank_info: Dict[str, Any], *, mode: str) -> str:
         return rank_name
     if score > 0:
         rank_text = _score_to_rank_fight(score) if mode == "fight" else _score_to_rank(score)
-        if rank_text != "\u672a\u5b9a\u7ea7":
+        if rank_text != "未定级":
             return rank_text
     if tier:
         return tier
@@ -1778,62 +1779,62 @@ def _rank_label(rank_info: Dict[str, Any], *, mode: str) -> str:
 
 def _score_to_rank(score: int) -> str:
     if score < 0:
-        return "\u672a\u5b9a\u7ea7"
+        return "未定级"
     if score < 1500:
         idx = int((score - 1000) // 100)
-        return f"\u9752\u94dc{5 - idx}"
+        return f"青铜{5 - idx}"
     if score < 2000:
         idx = int((score - 1500) // 100)
-        return f"\u767d\u94f6{5 - idx}"
+        return f"白银{5 - idx}"
     if score < 2500:
         idx = int((score - 2000) // 100)
-        return f"\u9ec4\u91d1{5 - idx}"
+        return f"黄金{5 - idx}"
     if score < 3000:
         idx = int((score - 2500) // 100)
-        return f"\u94c2\u91d1{5 - idx}"
+        return f"铂金{5 - idx}"
     if score < 3500:
         idx = int((score - 3000) // 100)
-        return f"\u94bb\u77f3{5 - idx}"
+        return f"钻石{5 - idx}"
     if score < 4000:
         idx = int((score - 3500) // 100)
-        return f"\u5927\u5e08{5 - idx}"
+        return f"大师{5 - idx}"
     if score < 4500:
         idx = int((score - 4000) // 100)
-        return f"\u5b97\u5e08{5 - idx}"
+        return f"宗师{5 - idx}"
     if score < 5000:
         idx = int((score - 4500) // 100)
-        return f"\u82f1\u6770{5 - idx}"
-    return "\u672a\u5b9a\u7ea7"
+        return f"英杰{5 - idx}"
+    return "未定级"
 
 
 def _score_to_rank_fight(score: int) -> str:
     if score < 0:
-        return "\u672a\u5b9a\u7ea7"
+        return "未定级"
     if score < 1500:
         idx = int((score - 999) // 100)
-        return f"\u83dc\u9e1f{5 - idx}"
+        return f"菜鸟{5 - idx}"
     if score < 2000:
         idx = int((score - 1500) // 100)
-        return f"\u65b0\u79c0{5 - idx}"
+        return f"新秀{5 - idx}"
     if score < 2500:
         idx = int((score - 2000) // 100)
-        return f"\u6597\u58eb{5 - idx}"
+        return f"斗士{5 - idx}"
     if score < 3000:
         idx = int((score - 2500) // 100)
-        return f"\u7cbe\u82f1{5 - idx}"
+        return f"精英{5 - idx}"
     if score < 3500:
         idx = int((score - 3000) // 100)
-        return f"\u4e13\u5bb6{5 - idx}"
+        return f"专家{5 - idx}"
     if score < 4000:
         idx = int((score - 3500) // 100)
-        return f"\u5168\u660e\u661f{5 - idx}"
+        return f"全明星{5 - idx}"
     if score < 4500:
         idx = int((score - 4000) // 100)
-        return f"\u4f20\u5947{5 - idx}"
+        return f"传奇{5 - idx}"
     if score < 5000:
         idx = int((score - 4500) // 100)
-        return f"\u5dc5\u5cf0{5 - idx}"
-    return "\u672a\u5b9a\u7ea7"
+        return f"巅峰{5 - idx}"
+    return "未定级"
 
 
 def _load_ow_config() -> Dict[str, Any]:
@@ -1845,17 +1846,28 @@ def _load_ow_config() -> Dict[str, Any]:
 
 
 def _font_resource(name: str, size: int, *, fallback: str | None = None) -> Any:
-    return load_resource_font(name, size, fallback=fallback)
+    return load_font(size, name=name, fallback=fallback)
 
 
 def _font_chinese(size: int) -> Any:
-    return load_chinese_font(size)
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback="GrotaRoundedExtraBold.otf",
+        prefer_cjk=True,
+    )
 
 
 def _font(size: int, *, prefer_en: bool = False) -> Any:
     if prefer_en:
-        return load_resource_font("en.ttf", size, fallback="en2.ttf")
-    return load_chinese_font(size)
+        return load_font(size, name="en.ttf", fallback="en2.ttf")
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback="GrotaRoundedExtraBold.otf",
+        prefer_cjk=True,
+        extra=("en2.ttf", "en.ttf"),
+    )
 
 
 def _font_en(size: int) -> Any:

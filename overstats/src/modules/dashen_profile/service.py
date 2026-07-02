@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import logging
 from typing import Any, Dict, Optional
-
-
-logger = logging.getLogger("astrbot")
 
 try:
     from overstats.src.client.apiclient import DashenAPIClient
@@ -159,7 +155,7 @@ class DashenProfileModule:
         try:
             return await self.requests.api_client.get_icon(avatar_url)
         except Exception as exc:
-            logger.debug(f"[overstats] failed to fetch dashen profile avatar: {exc}")
+            print(f"[overstats] failed to fetch dashen profile avatar: {exc}")
             return None
 
 

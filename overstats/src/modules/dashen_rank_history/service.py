@@ -7,14 +7,14 @@ try:
     from overstats.src.client.apiclient import DashenAPIClient
     from overstats.src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
     from overstats.src.modules.dashen_profile import get_live_dashen_season
-    from overstats.src.modules.season_config import get_dashen_history_start_season
     from overstats.src.modules.errors import ModuleError
+    from overstats.src.modules.season_config import get_dashen_history_start_season
 except ModuleNotFoundError:
     from src.client.apiclient import DashenAPIClient
     from src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
     from src.modules.dashen_profile import get_live_dashen_season
-    from src.modules.season_config import get_dashen_history_start_season
     from src.modules.errors import ModuleError
+    from src.modules.season_config import get_dashen_history_start_season
 
 from .render import HISTORY_SUBTITLE, RenderedImage, collect_missing_assets, render_rank_history
 from .requests import (

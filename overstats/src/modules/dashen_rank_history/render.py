@@ -11,27 +11,20 @@ except ModuleNotFoundError:
     from src.constants.backgrounds import build_random_map_background
 
 try:
-    from overstats.src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        contains_cjk,
-        load_chinese_font,
-        load_resource_font,
-    )
     from overstats.src.modules.query_tool import get_cached_asset_path, load_query_tool
 except ModuleNotFoundError:
-    from src.modules.font_utils import (
-        RES_DIR as _FONT_RES_DIR,
-        contains_cjk,
-        load_chinese_font,
-        load_resource_font,
-    )
     from src.modules.query_tool import get_cached_asset_path, load_query_tool
+
+try:
+    from overstats.src.modules.font_resolver import load_font, resolve_resource_dir
+except ModuleNotFoundError:
+    from src.modules.font_resolver import load_font, resolve_resource_dir
 
 from .requests import fight_payload_has_content, payload_data, sport_payload_has_content
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-RESOURCE_DIR = _FONT_RES_DIR
+RESOURCE_DIR = resolve_resource_dir()
 SEASON_LOGO_DIR = RESOURCE_DIR / "season_logo"
 RANK_FLAT_DIR = RESOURCE_DIR / "rank_flat"
 QUERY_TOOL_ASSET_DIR = RESOURCE_DIR / "query_tool_assets"
@@ -396,8 +389,7 @@ def _decorate_with_header(base_image: Any, *, player_name: str, subtitle: str) -
         sub_parts.append(str(subtitle).strip())
 
     name_text = display_name.upper() if display_name.isascii() else display_name
-    name_font = fonts["font_player_name"] if not contains_cjk(name_text) else fonts["font_cn_header"]
-    draw.text((24, 12), name_text, font=name_font, fill=(255, 255, 255, 255))
+    draw.text((24, 12), name_text, font=fonts["font_player_name"], fill=(255, 255, 255, 255))
     if sub_parts:
         draw.text((24, 54), " · ".join(sub_parts), font=fonts["font_cn_small_ex"], fill=(180, 185, 195, 255))
     draw.line([(0, header_height - 1), (canvas.width, header_height - 1)], fill=(55, 61, 74, 255), width=1)
@@ -537,11 +529,16 @@ def _load_local_rgba(path: Path) -> Any:
 
 
 def _font_resource(name: str, size: int, *, fallback: str | None = None) -> Any:
-    return load_resource_font(name, size, fallback=fallback)
+    return load_font(size, name=name, fallback=fallback)
 
 
 def _font_chinese(size: int) -> Any:
-    return load_chinese_font(size)
+    return load_font(
+        size,
+        name="simhei.ttf",
+        fallback="GrotaRoundedExtraBold.otf",
+        prefer_cjk=True,
+    )
 
 
 def _load_fonts() -> Dict[str, Any]:
@@ -549,7 +546,6 @@ def _load_fonts() -> Dict[str, Any]:
         "font_en_header": _font_resource("bignoodletoooblique.ttf", 32, fallback="BigNoodleToo.ttf"),
         "font_en_large": _font_resource("bignoodletoooblique.ttf", 80, fallback="BigNoodleToo.ttf"),
         "font_player_name": _font_resource("bignoodletoooblique.ttf", 32, fallback="BigNoodleToo.ttf"),
-        "font_cn_header": _font_chinese(32),
         "font_season_title": _font_resource("bignoodletoooblique.ttf", 80, fallback="BigNoodleToo.ttf"),
         "font_en_small2": _font_resource("BigNoodleToo.ttf", 30, fallback="en2.ttf"),
         "font_cn": _font_chinese(40),
