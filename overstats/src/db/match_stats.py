@@ -564,6 +564,7 @@ class IDPoolDB:
         contains_pattern = f"%{escaped_bnet_id}%"
 
         try:
+            self._initialize_player_identity_table(conn)
             cursor = conn.cursor()
             try:
                 if exact_only:
@@ -640,6 +641,99 @@ class IDPoolDB:
             ]
         except Exception as exc:
             self._warn_once(f"match stats sqlite search_player_identity_by_bnet_id failed: {type(exc).__name__}: {exc}")
+            return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def search_player_identity_by_battletag(
+        self,
+        battletag: str,
+        *,
+        limit: int = 10,
+        exact_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        normalized = str(battletag or "").replace("\uff03", "#").strip()
+        if not normalized:
+            return []
+
+        try:
+            normalized_limit = max(1, int(limit or 10))
+        except (TypeError, ValueError):
+            normalized_limit = 10
+
+        conn = self._get_connection()
+        if conn is None:
+            return []
+
+        escaped = self._escape_like_pattern(normalized)
+        contains_pattern = f"%{escaped}%"
+
+        try:
+            self._initialize_player_identity_table(conn)
+            cursor = conn.cursor()
+            try:
+                if exact_only:
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            bnetid,
+                            battletag,
+                            battlename,
+                            battlenum,
+                            update_time,
+                            'exact' AS match_type
+                        FROM {PLAYER_IDENTITY_TABLE}
+                        WHERE lower(battletag) = lower(?)
+                        ORDER BY update_time DESC, bnetid ASC
+                        LIMIT ?
+                        """,
+                        (normalized, normalized_limit),
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        SELECT
+                            bnetid,
+                            battletag,
+                            battlename,
+                            battlenum,
+                            update_time,
+                            CASE
+                                WHEN lower(battletag) = lower(?) THEN 'exact'
+                                ELSE 'contains'
+                            END AS match_type
+                        FROM {PLAYER_IDENTITY_TABLE}
+                        WHERE
+                            lower(battletag) = lower(?)
+                            OR battletag LIKE ? ESCAPE '\'
+                        ORDER BY
+                            CASE WHEN lower(battletag) = lower(?) THEN 0 ELSE 1 END ASC,
+                            update_time DESC,
+                            bnetid ASC
+                        LIMIT ?
+                        """,
+                        (normalized, normalized, contains_pattern, normalized, normalized_limit),
+                    )
+                rows = cursor.fetchall() or []
+            finally:
+                cursor.close()
+
+            return [
+                {
+                    "bnetid": row[0],
+                    "battletag": row[1],
+                    "battlename": row[2],
+                    "battlenum": row[3],
+                    "update_time": int(row[4] or 0),
+                    "match_type": row[5],
+                }
+                for row in rows
+            ]
+        except Exception as exc:
+            self._warn_once(f"match stats sqlite search_player_identity_by_battletag failed: {type(exc).__name__}: {exc}")
             return []
         finally:
             try:

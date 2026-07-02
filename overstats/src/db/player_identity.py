@@ -167,6 +167,25 @@ async def search_identity_by_bnet_id(
     )
 
 
+async def search_identity_by_battletag(
+    battletag: Any,
+    *,
+    db: Optional[IDPoolDB] = None,
+    limit: int = 10,
+    exact_only: bool = True,
+) -> List[Dict[str, Any]]:
+    normalized_battletag = normalize_battletag(battletag)
+    if not normalized_battletag:
+        return []
+    identity_db = db or IDPoolDB()
+    return await asyncio.to_thread(
+        identity_db.search_player_identity_by_battletag,
+        normalized_battletag,
+        limit=limit,
+        exact_only=exact_only,
+    )
+
+
 __all__ = [
     "PLAYER_IDENTITY_TABLE",
     "extract_identity_records",
@@ -174,6 +193,7 @@ __all__ = [
     "normalize_identity_record",
     "record_identity_payload",
     "record_identity_records",
+    "search_identity_by_battletag",
     "search_identity_by_bnet_id",
     "split_battletag",
 ]
