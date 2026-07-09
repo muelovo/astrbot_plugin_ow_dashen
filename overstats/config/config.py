@@ -8,7 +8,49 @@ _INJECTED_CONFIG: Optional[Dict[str, Any]] = None
 
 def inject_config(payload: Dict[str, Any]) -> None:
     global _INJECTED_CONFIG
+    global ANALYSIS_BASE_URL, ANALYSIS_API_KEY, ANALYSIS_PROXY
+    global ANALYSIS_OPENAI_MODEL, ANALYSIS_PERSONA_PROMPT
     _INJECTED_CONFIG = dict(payload or {})
+
+    analysis = _INJECTED_CONFIG.get("analysis", {})
+    if not isinstance(analysis, dict):
+        return
+
+    base_url = str(
+        analysis.get("_resolved_base_url")
+        or analysis.get("api_base_url")
+        or ""
+    ).strip()
+    api_key = str(
+        analysis.get("_resolved_api_key")
+        or analysis.get("api_key")
+        or ""
+    ).strip()
+    if base_url:
+        ANALYSIS_BASE_URL = base_url
+    if api_key:
+        ANALYSIS_API_KEY = api_key
+
+    proxy = str(
+        analysis.get("analysis_proxy")
+        or analysis.get("proxy")
+        or ""
+    ).strip()
+    if proxy:
+        ANALYSIS_PROXY = proxy
+
+    model = str(analysis.get("model") or analysis.get("openai_model") or "").strip()
+    if model:
+        ANALYSIS_OPENAI_MODEL = model
+
+    persona_prompt = str(
+        analysis.get("_resolved_persona_prompt")
+        or analysis.get("custom_persona_prompt")
+        or ""
+    ).strip()
+    if persona_prompt:
+        ANALYSIS_PERSONA_PROMPT = persona_prompt
+
 
 # ======================= Core Service ====================== #
 API_HOST = "127.0.0.1"
