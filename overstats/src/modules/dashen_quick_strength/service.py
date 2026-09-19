@@ -8,15 +8,26 @@ try:
     from overstats.src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
     from overstats.src.modules.errors import ModuleError
     from overstats.src.modules.query_tool import load_query_tool
+    from overstats.src.modules.risk_status import RiskStatus, parse_risk_status
 except ModuleNotFoundError:
     from src.client.apiclient import DashenAPIClient
     from src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
     from src.modules.errors import ModuleError
     from src.modules.query_tool import load_query_tool
+    from src.modules.risk_status import RiskStatus, parse_risk_status
 
 from .engine import DashenQuickStrengthEngine, normalize_limit
 from .render import RenderedImage, render_quick_strength
 from .requests import DashenQuickStrengthQuery, DashenQuickStrengthRequests
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -26,6 +37,9 @@ class DashenQuickStrengthSummary:
     overall_avg_rank: str
     score_range: Dict[str, int]
     used_previous_season_fallback: bool
+    personal_data_exceeded_percent: Optional[float] = None
+    personal_data_top_percent: Optional[float] = None
+    personal_data_metric_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,6 +48,9 @@ class DashenQuickStrengthSummary:
             "overall_avg_rank": str(self.overall_avg_rank),
             "score_range": dict(self.score_range),
             "used_previous_season_fallback": bool(self.used_previous_season_fallback),
+            "personal_data_exceeded_percent": self.personal_data_exceeded_percent,
+            "personal_data_top_percent": self.personal_data_top_percent,
+            "personal_data_metric_count": int(self.personal_data_metric_count),
         }
 
 
@@ -82,6 +99,7 @@ class DashenQuickStrengthOutput:
     matches: Sequence[DashenQuickStrengthMatchPoint]
     resolved_bnet: Optional[BnetSearchResult] = None
     image: Optional[RenderedImage] = None
+    risk_status: Optional[RiskStatus] = None
 
 
 class DashenQuickStrengthModule:
@@ -116,7 +134,6 @@ class DashenQuickStrengthModule:
                 message="No quick matches found for the requested player.",
                 status_code=404,
                 details={
-                    "customer_token": query.customer_token,
                     "bnet_id": query.bnet_id,
                 },
             )
@@ -127,6 +144,11 @@ class DashenQuickStrengthModule:
             overall_avg_rank=str(summary_dict.get("overall_avg_rank") or "Unranked"),
             score_range=dict(summary_dict.get("score_range") or {"min": 0, "max": 0}),
             used_previous_season_fallback=bool(summary_dict.get("used_previous_season_fallback")),
+            personal_data_exceeded_percent=_optional_float(
+                summary_dict.get("personal_data_exceeded_percent")
+            ),
+            personal_data_top_percent=_optional_float(summary_dict.get("personal_data_top_percent")),
+            personal_data_metric_count=int(summary_dict.get("personal_data_metric_count") or 0),
         )
         matches = tuple(
             DashenQuickStrengthMatchPoint(
@@ -151,8 +173,12 @@ class DashenQuickStrengthModule:
         full_id = resolved_bnet.full_id if resolved_bnet else (query.bnet_id or "Unknown")
         bnet_id = resolved_bnet.bnet_id if resolved_bnet else (query.bnet_id or "Unknown")
         image = None
+        risk_status = None
         if render:
-            avatar_bytes = await self._try_fetch_avatar_bytes(resolved_bnet, query.customer_token)
+            avatar_bytes, risk_status = await self._try_fetch_profile_assets(
+                resolved_bnet,
+                query.customer_token,
+            )
             try:
                 image = render_quick_strength(
                     player_name=full_id,
@@ -160,6 +186,7 @@ class DashenQuickStrengthModule:
                     summary=summary.to_dict(),
                     matches=[item.to_dict() for item in matches],
                     avatar_bytes=avatar_bytes,
+                    risk_status=risk_status,
                     config=config,
                 )
             except RuntimeError as exc:
@@ -176,6 +203,7 @@ class DashenQuickStrengthModule:
             bnet_id=bnet_id,
             summary=summary,
             matches=matches,
+            risk_status=risk_status,
             resolved_bnet=resolved_bnet,
             image=image,
         )
@@ -185,14 +213,33 @@ class DashenQuickStrengthModule:
         query: DashenQuickStrengthQuery,
     ) -> tuple[DashenQuickStrengthQuery, Optional[BnetSearchResult]]:
         if query.customer_token:
+            normalized_token = str(query.customer_token).strip()
+            normalized_bnet_id = str(query.bnet_id or "").strip()
+            try:
+                card_payload = await self.requests.api_client.query_card(normalized_token)
+            except Exception:
+                card_payload = {}
+            card_data = card_payload.get("data") if isinstance(card_payload, dict) else None
+            resolved_bnet = None
+            if isinstance(card_data, dict):
+                full_id = str(card_data.get("name") or normalized_bnet_id).strip()
+                bnet_id = str(card_data.get("bnetId") or "").strip()
+                if full_id or bnet_id:
+                    identity_data = dict(card_data)
+                    identity_data["customerToken"] = normalized_token
+                    resolved_bnet = BnetSearchResult(
+                        query=full_id or bnet_id or "customer_token",
+                        payload={"data": identity_data, "_identity_source": "query_card"},
+                    )
+                    normalized_bnet_id = full_id or normalized_bnet_id
             return (
                 DashenQuickStrengthQuery(
-                    customer_token=query.customer_token,
-                    bnet_id=query.bnet_id,
+                    customer_token=normalized_token,
+                    bnet_id=normalized_bnet_id,
                     limit=normalize_limit(query.limit),
                     include_previous_season=bool(query.include_previous_season),
                 ),
-                None,
+                resolved_bnet,
             )
 
         if not query.bnet_id:
@@ -238,28 +285,36 @@ class DashenQuickStrengthModule:
             search_output.result,
         )
 
-    async def _try_fetch_avatar_bytes(
+    async def _try_fetch_profile_assets(
         self,
         resolved_bnet: Optional[BnetSearchResult],
         customer_token: str,
-    ) -> Optional[bytes]:
+    ) -> tuple[Optional[bytes], Optional[RiskStatus]]:
         icon_url = str(resolved_bnet.icon_url or "").strip() if resolved_bnet else ""
-        if not icon_url:
+        payload = (
+            resolved_bnet.payload
+            if resolved_bnet and resolved_bnet.payload.get("_identity_source") == "query_card"
+            else None
+        )
+        if payload is None:
             try:
                 payload = await self.requests.api_client.query_card(customer_token)
             except Exception as exc:
                 print(f"[overstats] failed to fetch quick-strength profile card: {exc}")
                 payload = {}
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if isinstance(data, dict):
-                icon_url = str(data.get("icon") or "").strip()
+
+        risk_status = parse_risk_status(payload)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict):
+            icon_url = str(data.get("icon") or "").strip() or icon_url
         if not icon_url:
-            return None
+            return None, risk_status
         try:
-            return await self.requests.api_client.get_icon(icon_url)
+            avatar_bytes = await self.requests.api_client.get_icon(icon_url)
         except Exception as exc:
             print(f"[overstats] failed to fetch quick-strength avatar: {exc}")
-            return None
+            avatar_bytes = None
+        return avatar_bytes, risk_status
 
     def _load_ow_config(self) -> Dict[str, Any]:
         try:

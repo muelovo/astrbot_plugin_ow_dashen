@@ -41,7 +41,12 @@ AUTO_ROUTE_SUPPORTED_COMMANDS = (
     "守望赛事",
 )
 AUTO_ROUTE_SUPPORTED_COMMANDS = AUTO_ROUTE_SUPPORTED_COMMANDS + ("威能 安娜",)
-AUTO_ROUTE_SUPPORTED_COMMANDS = AUTO_ROUTE_SUPPORTED_COMMANDS + ("英雄百科 猎空", "英雄百科 猎空 闪现最多几层")
+AUTO_ROUTE_SUPPORTED_COMMANDS = AUTO_ROUTE_SUPPORTED_COMMANDS + (
+    "英雄百科 猎空",
+    "英雄百科 猎空 闪现最多几层",
+    "OW英雄 猎空",
+    "OW英雄 猎空 闪现最多几层",
+)
 AUTO_ROUTE_SUPPORTED_COMMANDS = AUTO_ROUTE_SUPPORTED_COMMANDS + ("英雄云图 Player#12345", "快速英雄云图 Player#12345")
 AUTO_ROUTE_GAME_MODE_ALIASES = {
     "快速": "quick",
@@ -62,6 +67,8 @@ AUTO_ROUTE_MMR_ALIASES = {
     "gold": "Gold",
     "白金": "Platinum",
     "platinum": "Platinum",
+    "翡翠": "Emerald",
+    "emerald": "Emerald",
     "钻石": "Diamond",
     "diamond": "Diamond",
     "大师": "Master",
@@ -110,6 +117,7 @@ Rules:
 8. For hero_treemap, default to competitive unless the user clearly asks for quick.
 9. For patch_notes, default to latest.
 10. If the user asks for one player tool but the target is missing, still choose the best tool instead of chatting.
+11. For dashen_profile, a trailing `*` on the user's command means competitive mode.
 """.strip()
 
 
@@ -466,6 +474,7 @@ class AutoRouteModule:
                                     "Silver",
                                     "Gold",
                                     "Platinum",
+                                    "Emerald",
                                     "Diamond",
                                     "Master",
                                     "Grandmaster",
@@ -565,6 +574,11 @@ class AutoRouteModule:
             tools=self.build_tools(),
             supported_commands=AUTO_ROUTE_SUPPORTED_COMMANDS,
         )
+        if tool_call.name == "dashen_profile" and normalized_text.endswith(("*", "＊")):
+            tool_call.arguments["mode"] = "competitive"
+            target = str(tool_call.arguments.get("target") or "").strip()
+            if target.endswith(("*", "＊")):
+                tool_call.arguments["target"] = target[:-1].rstrip()
         builder = self._selection_builders.get(tool_call.name)
         if builder is None:
             raise ModuleError(

@@ -7,8 +7,10 @@
 - 单场对局详情
 - 段位历史
 - 快速强度 / 竞技强度
+- 段位分布 / 地图选取率
 - 今日 / 昨日 / 本周总结
 - 英雄热度榜单 / 单英雄历史曲线
+- 英雄威能及本地选取率
 - 商店
 - 补丁说明
 
@@ -210,6 +212,9 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 /ow 对局详情 1
 /ow 段位
 /ow 竞技强度 3
+/ow 段位分布
+/ow 地图选取率
+/ow 威能 安娜
 /ow 今日总结
 /ow 商店
 /ow 补丁
@@ -237,6 +242,8 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 /ow 段位 [BattleTag]
 /ow 快速强度 [BattleTag] [场数]
 /ow 竞技强度 [BattleTag] [场数]
+/ow 段位分布
+/ow 地图选取率 [天数]
 /ow 今日总结 [BattleTag]
 /ow 昨日总结 [BattleTag]
 /ow 本周总结 [BattleTag]
@@ -247,6 +254,7 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 ```text
 /ow 英雄热度 [模式] [段位]
 /ow 英雄曲线 <英雄名> [模式] [段位]
+/ow 威能 <英雄名>
 /ow 商店
 /ow 补丁 [类型]
 ```

@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QUERY_TOOL_PATH = PROJECT_ROOT / "res" / "query_tool.json"
 QUERY_TOOL_PATH = get_overstats_data_dir() / "query_tool.json"
-DEFAULT_DASHEN_CURRENT_SEASON = 22
+DEFAULT_DASHEN_CURRENT_SEASON = 24
 DEFAULT_DASHEN_HISTORY_START_SEASON = 15
 
 

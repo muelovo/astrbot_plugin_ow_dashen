@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ...constants.backgrounds import build_random_map_background
+from ...constants.ranks import RANK_LABELS_CN, RANK_ORDER, strength_score_to_icon_level
 
 from .engine import score_to_rank
 
@@ -17,8 +18,16 @@ except ModuleNotFoundError:
 
 try:
     from overstats.src.modules.font_resolver import load_font
+    from overstats.src.modules.risk_status import (
+        draw_risk_status_badge,
+        measure_risk_status_badge,
+    )
 except ModuleNotFoundError:
     from src.modules.font_resolver import load_font
+    from src.modules.risk_status import (
+        draw_risk_status_badge,
+        measure_risk_status_badge,
+    )
 
 
 def _resolve_resource_dir() -> Path:
@@ -34,18 +43,7 @@ def _resolve_resource_dir() -> Path:
 
 
 RESOURCE_DIR = _resolve_resource_dir()
-RANK_BREAKPOINTS = [1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500]
-RANK_LABELS_CN = {
-    "Bronze": "青铜",
-    "Silver": "白银",
-    "Gold": "黄金",
-    "Platinum": "白金",
-    "Diamond": "钻石",
-    "Master": "大师",
-    "Grandmaster": "宗师",
-    "Champion": "英杰",
-    "Unranked": "未定级",
-}
+RANK_BREAKPOINTS = [500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500]
 RESULT_LABELS = {1: "胜", -1: "负", 0: "平"}
 DEFAULT_STRENGTH_THEME = {
     "range_color": (140, 214, 255, 188),
@@ -61,6 +59,11 @@ COMPETITIVE_STRENGTH_THEME = {
     "avatar_badge_text": "CS",
 }
 TOP_TIER_ICON_LEVELS = {6, 7, 8}
+RANK_DISTRIBUTION_COLORS = (
+    (207, 120, 86), (196, 201, 200), (217, 164, 59),
+    (149, 213, 179), (92, 211, 156), (93, 163, 241),
+    (140, 230, 94), (135, 115, 249), (108, 92, 199),
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +79,7 @@ def render_quick_strength(
     summary: Dict[str, Any],
     matches: Sequence[Dict[str, Any]],
     avatar_bytes: Optional[bytes] = None,
+    risk_status: Any = None,
     config: Optional[Dict[str, Any]] = None,
     theme: Optional[Dict[str, Any]] = None,
     title_text: str = "快速强度指数",
@@ -89,7 +93,7 @@ def render_quick_strength(
 
     scale = 2
     base_width = 1500
-    base_height = 980
+    base_height = 1076
     width = base_width * scale
     height = base_height * scale
     canvas = Image.new("RGBA", (width, height), (11, 17, 28, 255))
@@ -115,7 +119,7 @@ def render_quick_strength(
     )
     _draw_panel(
         draw,
-        (36 * scale, 872 * scale, width - 36 * scale, height - 24 * scale),
+        (36 * scale, 968 * scale, width - 36 * scale, height - 24 * scale),
         fill=(13, 20, 33, 225),
         outline=(47, 62, 88, 255),
         radius=14 * scale,
@@ -128,6 +132,7 @@ def render_quick_strength(
         bnet_id=bnet_id,
         summary=summary,
         avatar_bytes=avatar_bytes,
+        risk_status=risk_status,
         fonts=fonts,
         scale=scale,
         theme=active_theme,
@@ -145,6 +150,7 @@ def render_quick_strength(
         theme=active_theme,
         chart_title_text=chart_title_text,
     )
+    _draw_rank_distribution(draw, matches=matches, fonts=fonts, scale=scale)
     _draw_footer(draw, fonts=fonts, scale=scale, theme=active_theme)
 
     output = BytesIO()
@@ -229,6 +235,7 @@ def _draw_header(
     bnet_id: str,
     summary: Dict[str, Any],
     avatar_bytes: Optional[bytes],
+    risk_status: Any,
     fonts: Dict[str, Any],
     scale: int,
     theme: Dict[str, Any],
@@ -271,9 +278,27 @@ def _draw_header(
 
     title_x = 188 * scale
     name_font = fonts[_player_name_font_key(name_text)]
+    badge_max_width = 240 * scale
+    badge_width, _, _ = measure_risk_status_badge(
+        draw,
+        risk_status,
+        font=fonts["font_meta"],
+        padding_x=8 * scale,
+        padding_y=3 * scale,
+        max_width=badge_max_width,
+    )
+    if badge_width:
+        player_region_right = 760 * scale
+        max_name_width = max(
+            80 * scale,
+            player_region_right - title_x - badge_width - 36 * scale,
+        )
+        rendered_name = _fit_text(draw, name_text, name_font, max_name_width)
+    else:
+        rendered_name = name_text
     draw.text(
         (title_x, 42 * scale),
-        name_text,
+        rendered_name,
         font=name_font,
         fill=(242, 247, 255, 255),
     )
@@ -291,9 +316,24 @@ def _draw_header(
         fill=(158, 178, 205, 255),
     )
 
-    name_width = _measure_text(draw, name_text, name_font)
+    name_width = _measure_text(draw, rendered_name, name_font)
     summary_x = max(500 * scale, title_x + name_width + 4 * scale)
-    summary_x = min(summary_x, 660 * scale)
+    if badge_width:
+        badge_x = title_x + name_width + 12 * scale
+        badge_width, _ = draw_risk_status_badge(
+            draw,
+            badge_x,
+            47 * scale,
+            risk_status,
+            font=fonts["font_meta"],
+            padding_x=8 * scale,
+            padding_y=3 * scale,
+            max_width=badge_max_width,
+        )
+        summary_x = max(summary_x, badge_x + badge_width + 18 * scale)
+        summary_x = min(summary_x, 760 * scale)
+    else:
+        summary_x = min(summary_x, 660 * scale)
     _draw_summary_block(
         canvas,
         draw,
@@ -303,6 +343,59 @@ def _draw_header(
         fonts=fonts,
         scale=scale,
         match_scope_text=match_scope_text,
+    )
+    _draw_personal_data_ranking(
+        draw,
+        summary=summary,
+        fonts=fonts,
+        scale=scale,
+        theme=theme,
+    )
+
+
+def _draw_personal_data_ranking(
+    draw: Any,
+    *,
+    summary: Dict[str, Any],
+    fonts: Dict[str, Any],
+    scale: int,
+    theme: Dict[str, Any],
+) -> None:
+    raw_top_percent = summary.get("personal_data_top_percent")
+    if raw_top_percent is None:
+        return
+    try:
+        top_percent = max(0.0, min(100.0, float(raw_top_percent)))
+    except (TypeError, ValueError):
+        return
+
+    percent_text = f"{top_percent:.1f}".rstrip("0").rstrip(".")
+    text = f"个人数据位于数据库前{percent_text}%"
+    font = fonts["font_sub"]
+    text_width = _measure_text(draw, text, font)
+    padding_x = 14 * scale
+    padding_y = 8 * scale
+    right = 1428 * scale
+    top = 52 * scale
+    box = (
+        right - text_width - padding_x * 2,
+        top - padding_y,
+        right,
+        top + 18 * scale + padding_y,
+    )
+    accent = tuple(theme.get("line_color") or DEFAULT_STRENGTH_THEME["line_color"])
+    draw.rounded_rectangle(
+        box,
+        radius=10 * scale,
+        fill=(24, 34, 51, 218),
+        outline=(accent[0], accent[1], accent[2], 170),
+        width=max(2, scale),
+    )
+    draw.text(
+        (right - text_width - padding_x, top),
+        text,
+        font=font,
+        fill=(226, 237, 252, 255),
     )
 
 
@@ -427,11 +520,11 @@ def _draw_chart(
 
     score_values = _collect_chart_scores(matches)
     if not score_values:
-        score_min = 1000
+        score_min = 500
         score_max = 5000
     else:
-        score_min = max(900, min(score_values) - 180)
-        score_max = min(5100, max(score_values) + 180)
+        score_min = max(400, min(score_values) - 180)
+        score_max = min(5000, max(score_values) + 180)
         score_min = (score_min // 100) * 100
         score_max = ((score_max + 99) // 100) * 100
         if score_max - score_min < 1200:
@@ -579,9 +672,55 @@ def _draw_chart(
         )
 
 
+def _rank_distribution_counts(matches: Sequence[Dict[str, Any]]) -> List[int]:
+    # Count each observed participant's role rank, matching the main chart.
+    counts = [0] * (len(RANK_ORDER) * 5)
+    for match in matches:
+        for side in ("team_scores", "enemy_scores"):
+            for score in match.get(side) or []:
+                try:
+                    value = int(score)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if value >= 500:
+                    counts[min((value - 500) // 100, len(counts) - 1)] += 1
+    return counts
+
+
+def _draw_rank_distribution(
+    draw: Any, *, matches: Sequence[Dict[str, Any]], fonts: Dict[str, Any], scale: int,
+) -> None:
+    _draw_panel(
+        draw, (36 * scale, 872 * scale, 1464 * scale, 956 * scale),
+        fill=(13, 20, 33, 225), outline=(47, 62, 88, 255), radius=14 * scale,
+    )
+    counts = _rank_distribution_counts(matches)
+    peak = max(max(counts), 1)
+    group_width = (1428 - 72) / len(RANK_ORDER)
+    bar_step = group_width / 5
+    bar_half_width = (bar_step - 6) / 2
+    baseline = 932 * scale
+    for rank_index, rank in enumerate(RANK_ORDER):
+        color = (*RANK_DISTRIBUTION_COLORS[rank_index], 255)
+        center = (72 + (rank_index + 0.5) * group_width) * scale
+        for division_index in range(5):
+            index = rank_index * 5 + division_index
+            x = center + (division_index - 2) * bar_step * scale
+            left, right = round(x - bar_half_width * scale), round(x + bar_half_width * scale)
+            if counts[index]:
+                bar_height = max(1, round(48 * scale * counts[index] / peak))
+                draw.rectangle((left, baseline - bar_height, right, baseline), fill=color)
+            else:
+                draw.line((left, baseline, right, baseline), fill=color, width=2 * scale)
+        draw.text(
+            (round(center), 936 * scale), RANK_LABELS_CN[rank],
+            font=fonts["font_axis"], fill=color, anchor="mt",
+        )
+
+
 def _draw_footer(draw: Any, *, fonts: Dict[str, Any], scale: int, theme: Dict[str, Any]) -> None:
     x1 = 72 * scale
-    y1 = 898 * scale
+    y1 = 994 * scale
     range_legend_color = tuple(theme.get("range_color") or DEFAULT_STRENGTH_THEME["range_color"])
     legend_items = [
         (
@@ -943,27 +1082,7 @@ def _summary_rank_icon_size(rank_level: int, *, scale: int) -> Tuple[int, int]:
 
 
 def _rank_icon_level_from_score(score: float) -> int:
-    try:
-        score_num = int(float(score))
-    except (TypeError, ValueError):
-        return 0
-    if score_num <= 0:
-        return 0
-    if score_num < 1500:
-        return 1
-    if score_num < 2000:
-        return 2
-    if score_num < 2500:
-        return 3
-    if score_num < 3000:
-        return 4
-    if score_num < 3500:
-        return 5
-    if score_num < 4000:
-        return 6
-    if score_num < 4500:
-        return 7
-    return 8
+    return strength_score_to_icon_level(score)
 
 
 def _score_to_rank_cn(score: Any) -> str:

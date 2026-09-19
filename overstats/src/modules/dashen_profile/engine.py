@@ -6,6 +6,16 @@ import datetime as dt
 import time
 from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
+try:
+    from overstats.src.constants.ranks import get_rank_name, get_rank_score, get_rank_sub_tier
+except ModuleNotFoundError:
+    from src.constants.ranks import get_rank_name, get_rank_score, get_rank_sub_tier
+
+try:
+    from overstats.src.modules.risk_status import RiskStatus, parse_risk_status
+except ModuleNotFoundError:
+    from src.modules.risk_status import RiskStatus, parse_risk_status
+
 from .requests import (
     DashenProfileBundle,
     DashenProfileRequests,
@@ -75,6 +85,8 @@ class RolePanelEntry:
     max_tier: str
     match_sum: int
     win_sum: int
+    rank_name: str = ""
+    max_rank_name: str = ""
     is_history: bool = False
     history_season: str = ""
 
@@ -102,6 +114,7 @@ class ProfileRenderContext:
     leftover_open_billboards: tuple[HeroBillboardEntry, ...]
     leftover_preset_billboards: tuple[HeroBillboardEntry, ...]
     race_progress: Optional[Dict[str, Any]] = None
+    risk_status: Optional[RiskStatus] = None
 
 
 def _payload_data(payload: Any) -> Dict[str, Any]:
@@ -249,7 +262,7 @@ def build_role_panel_entries(
     entries: list[RolePanelEntry] = []
     for role_type in ROLE_ORDER:
         current_role_data = current_map.get(role_type)
-        current_rank_score = _safe_int(((current_role_data or {}).get("lastRankInfo") or {}).get("rankScore"))
+        current_rank_score = _safe_int(get_rank_score((current_role_data or {}).get("lastRankInfo") or {}))
         final_data = dict(current_role_data or {})
         is_history = False
         history_season = ""
@@ -261,7 +274,7 @@ def build_role_panel_entries(
                 history_item = guide_map.get(role_type)
                 if not history_item:
                     continue
-                score = _safe_int(((history_item.get("lastRankInfo") or {}).get("rankScore")))
+                score = _safe_int(get_rank_score(history_item.get("lastRankInfo") or {}))
                 if score > 0:
                     ranked_history = (season_id, history_item)
                     break
@@ -284,12 +297,14 @@ def build_role_panel_entries(
         entries.append(
             RolePanelEntry(
                 role_type=role_type,
-                score=_safe_int(last_rank_info.get("rankScore")),
-                tier=str(last_rank_info.get("rankSubTier") or ""),
-                max_score=_safe_int(max_rank_info.get("rankScore")),
-                max_tier=str(max_rank_info.get("rankSubTier") or ""),
+                score=_safe_int(get_rank_score(last_rank_info)),
+                tier=str(get_rank_sub_tier(last_rank_info) or ""),
+                max_score=_safe_int(get_rank_score(max_rank_info)),
+                max_tier=str(get_rank_sub_tier(max_rank_info) or ""),
                 match_sum=match_sum,
                 win_sum=int(match_sum * win_rate / 100) if match_sum > 0 else 0,
+                rank_name=str(get_rank_name(last_rank_info) or ""),
+                max_rank_name=str(get_rank_name(max_rank_info) or ""),
                 is_history=is_history,
                 history_season=history_season,
             )
@@ -317,7 +332,12 @@ class DashenProfileEngine:
         selected_payload = leisure_data if quick_mode else sport_data
 
         tasks: list[Awaitable[Any]] = [
-            self._build_recent_match_pool(bundle, sport_data=sport_data, leisure_data=leisure_data),
+            self._build_recent_match_pool(
+                bundle,
+                sport_data=sport_data,
+                leisure_data=leisure_data,
+                quick_mode=quick_mode,
+            ),
             self._build_role_panel_entries(bundle, sport_data=sport_data),
             self.requests.get_billboard_user(bundle.customer_token),
         ]
@@ -368,6 +388,7 @@ class DashenProfileEngine:
             title=str(card_data.get("title") or "").strip(),
             level=_safe_int(card_data.get("level")),
             game_time=_safe_float(card_data.get("gameTime")),
+            risk_status=parse_risk_status(card_data),
             logical_season=bundle.logical_season,
             quick_mode=quick_mode,
             avatar_bytes=avatar_bytes,
@@ -388,6 +409,7 @@ class DashenProfileEngine:
         *,
         sport_data: Dict[str, Any],
         leisure_data: Dict[str, Any],
+        quick_mode: bool = True,
     ) -> tuple[Dict[str, Any], ...]:
         logical_season = int(bundle.logical_season or get_live_dashen_season())
         season_candidates = get_recent_dashen_seasons(
@@ -411,15 +433,26 @@ class DashenProfileEngine:
             return sport_payload, leisure_payload
 
         for season_id in season_candidates:
-            stadium_leisure_payload, stadium_sport_payload = await asyncio.gather(
-                self.requests.get_stadium_leisure_role_card(bundle.customer_token, logical_season=season_id),
-                self.requests.get_stadium_count(bundle.customer_token, logical_season=season_id),
-            )
-            stadium_pool = _normalize_recent_match_entries(
-                extract_match_entries(stadium_leisure_payload, "recentMatchList", "matchList"),
-                season_label=season_id,
-                game_mode="LeisureFight",
-            )
+            if quick_mode:
+                stadium_leisure_payload, stadium_sport_payload = await asyncio.gather(
+                    self.requests.get_stadium_leisure_role_card(bundle.customer_token, logical_season=season_id),
+                    self.requests.get_stadium_count(bundle.customer_token, logical_season=season_id),
+                )
+            else:
+                stadium_leisure_payload = {}
+                stadium_sport_payload = await self.requests.get_stadium_count(
+                    bundle.customer_token,
+                    logical_season=season_id,
+                )
+            stadium_pool = []
+            if quick_mode:
+                stadium_pool.extend(
+                    _normalize_recent_match_entries(
+                        extract_match_entries(stadium_leisure_payload, "recentMatchList", "matchList"),
+                        season_label=season_id,
+                        game_mode="LeisureFight",
+                    )
+                )
             stadium_pool.extend(
                 _normalize_recent_match_entries(
                     extract_match_entries(stadium_sport_payload, "matchList", "recentMatchList"),
@@ -454,30 +487,31 @@ class DashenProfileEngine:
                     _extend_match_pool_unique(match_pool, extra_entries)
                     break
 
-        leisure_match_list = _normalize_recent_match_entries(
-            extract_match_entries(leisure_data, "matchList", "recentMatchList"),
-            season_label=logical_season,
-            game_mode="leisure",
-            instance_type="IT_UNRANKED",
-        )
-        _extend_match_pool_unique(match_pool, leisure_match_list)
-        if len(leisure_match_list) >= 12:
-            for season_id in season_candidates:
-                extra_match = await self.requests.get_extra_match_page(
-                    bundle.customer_token,
-                    "leisure",
-                    page=2,
-                    logical_season=season_id,
-                )
-                extra_entries = _normalize_recent_match_entries(
-                    extract_match_entries(extra_match, "matchList", "recentMatchList"),
-                    season_label=season_id,
-                    game_mode="leisure",
-                    instance_type="IT_UNRANKED",
-                )
-                if extra_entries:
-                    _extend_match_pool_unique(match_pool, extra_entries)
-                    break
+        if quick_mode:
+            leisure_match_list = _normalize_recent_match_entries(
+                extract_match_entries(leisure_data, "matchList", "recentMatchList"),
+                season_label=logical_season,
+                game_mode="leisure",
+                instance_type="IT_UNRANKED",
+            )
+            _extend_match_pool_unique(match_pool, leisure_match_list)
+            if len(leisure_match_list) >= 12:
+                for season_id in season_candidates:
+                    extra_match = await self.requests.get_extra_match_page(
+                        bundle.customer_token,
+                        "leisure",
+                        page=2,
+                        logical_season=season_id,
+                    )
+                    extra_entries = _normalize_recent_match_entries(
+                        extract_match_entries(extra_match, "matchList", "recentMatchList"),
+                        season_label=season_id,
+                        game_mode="leisure",
+                        instance_type="IT_UNRANKED",
+                    )
+                    if extra_entries:
+                        _extend_match_pool_unique(match_pool, extra_entries)
+                        break
 
         if bundle.include_previous_season:
             await self._fill_recent_match_pool_from_previous_season(
@@ -485,6 +519,7 @@ class DashenProfileEngine:
                 logical_season=logical_season,
                 target_pool=match_pool,
                 get_season_payload_pair=get_season_payload_pair,
+                quick_mode=quick_mode,
             )
 
         match_pool = merge_unique_match_entries([], match_pool)
@@ -497,6 +532,7 @@ class DashenProfileEngine:
         logical_season: int,
         target_pool: list[Dict[str, Any]],
         get_season_payload_pair: Callable[[int], Awaitable[tuple[Dict[str, Any], Dict[str, Any]]]],
+        quick_mode: bool = True,
     ) -> None:
         if count_unique_match_entries(target_pool) >= RECENT_MATCH_TARGET:
             return
@@ -505,19 +541,27 @@ class DashenProfileEngine:
         if previous_season <= 0:
             return
 
-        stadium_leisure_payload, stadium_sport_payload = await asyncio.gather(
-            self.requests.get_stadium_leisure_role_card(customer_token, logical_season=previous_season),
-            self.requests.get_stadium_count(customer_token, logical_season=previous_season),
-        )
-        _extend_match_pool_unique(
-            target_pool,
-            _normalize_recent_match_entries(
-                extract_match_entries(stadium_leisure_payload, "recentMatchList", "matchList"),
-                season_label=previous_season,
-                game_mode="LeisureFight",
-            ),
-            limit=RECENT_MATCH_TARGET,
-        )
+        if quick_mode:
+            stadium_leisure_payload, stadium_sport_payload = await asyncio.gather(
+                self.requests.get_stadium_leisure_role_card(customer_token, logical_season=previous_season),
+                self.requests.get_stadium_count(customer_token, logical_season=previous_season),
+            )
+        else:
+            stadium_leisure_payload = {}
+            stadium_sport_payload = await self.requests.get_stadium_count(
+                customer_token,
+                logical_season=previous_season,
+            )
+        if quick_mode:
+            _extend_match_pool_unique(
+                target_pool,
+                _normalize_recent_match_entries(
+                    extract_match_entries(stadium_leisure_payload, "recentMatchList", "matchList"),
+                    season_label=previous_season,
+                    game_mode="LeisureFight",
+                ),
+                limit=RECENT_MATCH_TARGET,
+            )
         _extend_match_pool_unique(
             target_pool,
             _normalize_recent_match_entries(
@@ -559,6 +603,9 @@ class DashenProfileEngine:
             )
 
         if count_unique_match_entries(target_pool) >= RECENT_MATCH_TARGET:
+            return
+
+        if not quick_mode:
             return
 
         leisure_entries = _normalize_recent_match_entries(
@@ -714,7 +761,7 @@ class DashenProfileEngine:
 
         filtered_matches: list[Dict[str, Any]] = []
         for match in normal_matches:
-            if _safe_int(((match.get("rankInfo") or {}).get("rankScore"))) <= 0:
+            if _safe_int(get_rank_score(match.get("rankInfo") or {})) <= 0:
                 continue
             item = dict(match)
             item["_progress_mode"] = "normal"
@@ -925,7 +972,7 @@ class DashenProfileEngine:
             begin_ts = _safe_begin_ts(match)
             if not (start_ts_ms <= begin_ts <= end_ts_ms):
                 continue
-            if _safe_int(((match.get("rankInfo") or {}).get("rankScore"))) <= 0:
+            if _safe_int(get_rank_score(match.get("rankInfo") or {})) <= 0:
                 continue
             filtered_matches.append(dict(match))
         filtered_matches.sort(key=_safe_begin_ts)

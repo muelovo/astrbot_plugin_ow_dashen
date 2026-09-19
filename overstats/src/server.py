@@ -60,6 +60,10 @@ try:
         PlayerIdentitySearchQuery,
         player_identity_search_module,
     )
+    from overstats.src.modules.internal_rank_distribution import (
+        RankDistributionQuery,
+        internal_rank_distribution_module,
+    )
     from overstats.src.modules.auto_route import auto_route_module
     from overstats.src.http_server import resolve_http_ui_asset
 except ModuleNotFoundError:
@@ -112,6 +116,10 @@ except ModuleNotFoundError:
         PlayerIdentitySearchQuery,
         player_identity_search_module,
     )
+    from src.modules.internal_rank_distribution import (
+        RankDistributionQuery,
+        internal_rank_distribution_module,
+    )
     from src.modules.auto_route import auto_route_module
     from src.http_server import resolve_http_ui_asset
 
@@ -152,6 +160,17 @@ def _coerce_optional_int(payload: Dict[str, object], *keys: str) -> Optional[int
                 details={key: value},
             ) from exc
     return None
+
+
+def _build_internal_rank_distribution_query(payload: Dict[str, object]) -> RankDistributionQuery:
+    raw_rows = payload.get("rows")
+    raw_mode_summary = payload.get("mode_summary", payload.get("modeSummary", {}))
+    return RankDistributionQuery(
+        season=payload.get("season", 0),
+        total_count=payload.get("total_count", payload.get("totalCount", 0)),
+        rows=raw_rows if isinstance(raw_rows, list) else [],
+        mode_summary=raw_mode_summary if isinstance(raw_mode_summary, dict) else {},
+    )
 
 
 def _is_success_status(status: HTTPStatus) -> bool:
@@ -351,6 +370,19 @@ class OverstatsCoreService:
             dashen_max_concurrent_requests,
             max_accepted_requests=dashen_max_accepted_requests,
         )
+
+    async def handle_internal_rank_distribution_image(self, payload: Dict[str, object]) -> bytes:
+        result = await internal_rank_distribution_module.query_rank_distribution(
+            _build_internal_rank_distribution_query(payload),
+            render=True,
+        )
+        if not result.image:
+            raise ModuleError(
+                error="render_failed",
+                message="Rank distribution image was not generated.",
+                status_code=500,
+            )
+        return result.image.content
 
     async def handle_dashen_profile(self, payload: Dict[str, object]) -> Dict[str, object]:
         return await self.dashen_request_queue.run(
@@ -1457,6 +1489,9 @@ class OverstatsCoreService:
         )
 
     async def _handle_dashen_summary(self, payload: Dict[str, object], *, scope: str = "today") -> Dict[str, object]:
+        if scope == "season":
+            from .modules.dashen_summary.season_report import query_season_report
+            return await query_season_report(payload)
         bnet_id = str(payload.get("bnet_id") or payload.get("bnetId") or "").strip()
         full_id = str(payload.get("full_id") or payload.get("fullId") or "").strip()
         customer_token = str(payload.get("customer_token") or payload.get("customerToken") or "").strip()
@@ -1496,6 +1531,9 @@ class OverstatsCoreService:
         )
 
     async def _handle_dashen_summary_image(self, payload: Dict[str, object], *, scope: str = "today") -> tuple[bytes, str]:
+        if scope == "season":
+            from .modules.dashen_summary.season_report import query_season_report
+            return await query_season_report(payload, render=True)
         bnet_id = str(payload.get("bnet_id") or payload.get("bnetId") or "").strip()
         full_id = str(payload.get("full_id") or payload.get("fullId") or "").strip()
         customer_token = str(payload.get("customer_token") or payload.get("customerToken") or "").strip()
@@ -1890,6 +1928,10 @@ def create_server(config: APIConfig) -> ThreadingHTTPServer:
                 self._handle_player_identity_search_post()
                 return
 
+            if path == "/api/v2/internal/rank-distribution/image":
+                self._handle_internal_rank_distribution_image_post()
+                return
+
             if path == "/api/v2/blizzard-player-search":
                 self._handle_blizzard_player_search_post()
                 return
@@ -1968,6 +2010,15 @@ def create_server(config: APIConfig) -> ThreadingHTTPServer:
 
             if path == "/api/v2/ow-guess/replies":
                 self._handle_ow_guess_replies_post()
+                return
+
+            # Season report is API-only until its layout is approved.
+            if path == "/api/v2/dashen-summary/season/image":
+                self._handle_dashen_summary_image_post(scope="season")
+                return
+
+            if path == "/api/v2/dashen-summary/season":
+                self._handle_dashen_summary_post(scope="season")
                 return
 
             if path == "/api/v2/dashen-summary/week/image":
@@ -2186,6 +2237,51 @@ def create_server(config: APIConfig) -> ThreadingHTTPServer:
                 return
 
             self._send_json(HTTPStatus.OK, result)
+
+        def _handle_internal_rank_distribution_image_post(self) -> None:
+            try:
+                payload = self._read_json_body()
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {
+                        "ok": False,
+                        "error": "invalid_json",
+                        "message": str(exc),
+                    },
+                )
+                return
+
+            try:
+                image_body = async_runner.run(service.handle_internal_rank_distribution_image(payload))
+            except ModuleError as exc:
+                self._send_json(
+                    HTTPStatus(exc.status_code),
+                    {
+                        "ok": False,
+                        "error": exc.error,
+                        "message": exc.message,
+                        "hint": exc.hint,
+                        "details": exc.details,
+                    },
+                )
+                return
+            except Exception as exc:
+                self._send_json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {
+                        "ok": False,
+                        "error": "internal_error",
+                        "message": "Internal server error. See details.",
+                        "details": {
+                            "exception": type(exc).__name__,
+                            "message": str(exc),
+                        },
+                    },
+                )
+                return
+
+            self._send_binary(HTTPStatus.OK, image_body, "image/png")
 
         def _handle_blizzard_player_search_post(self) -> None:
             try:

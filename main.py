@@ -30,8 +30,9 @@ _TEMP_IMAGE_DIR = _PLUGIN_DATA_DIR / "temp"
 _CN_MODE_MAP = {"快速": "quick", "竞技": "competitive"}
 _CN_RANK_MAP = {
     "全部": "all", "青铜": "Bronze", "白银": "Silver", "黄金": "Gold",
-    "铂金": "Platinum", "钻石": "Diamond", "大师": "Master",
-    "宗师": "Grandmaster", "冠军": "Champion",
+    "铂金": "Platinum", "白金": "Platinum", "翡翠": "Emerald",
+    "钻石": "Diamond", "大师": "Master", "宗师": "Grandmaster",
+    "冠军": "Champion", "英杰": "Champion",
 }
 _CN_PATCH_KIND_MAP = {"最新": "latest", "小更新": "small", "大更新": "big"}
 
@@ -139,6 +140,9 @@ class OwDashenPlugin(Star):
         self._competitive_strength = None
         self._summary = None
         self._pick_rate = None
+        self._perk = None
+        self._rank_distribution = None
+        self._match_stats_db = None
         self._hero_leaderboard_sync = None
         self._shop = None
         self._patch_notes = None
@@ -172,6 +176,15 @@ class OwDashenPlugin(Star):
         from overstats.src.modules.ow_hero_pick_rate.service import OWHeroPickRateModule
         self._pick_rate = OWHeroPickRateModule()
 
+        from overstats.src.db import IDPoolDB
+        self._match_stats_db = IDPoolDB(_OVERSTATS_DATA_DIR / "db" / "match_stats.sqlite3")
+
+        from overstats.src.modules.ow_hero_perk.service import OWHeroPerkModule
+        self._perk = OWHeroPerkModule(db=self._match_stats_db)
+
+        from overstats.src.modules.internal_rank_distribution.service import InternalRankDistributionModule
+        self._rank_distribution = InternalRankDistributionModule()
+
         from overstats.src.modules.ow_shop.service import OWShopModule
         self._shop = OWShopModule()
 
@@ -195,7 +208,11 @@ class OwDashenPlugin(Star):
             self._bnet_search = BnetSearchModule(self._api_client)
 
             from overstats.src.modules.dashen_profile.service import DashenProfileModule
-            self._profile = DashenProfileModule(self._api_client, search_module=self._bnet_search)
+            self._profile = DashenProfileModule(
+                self._api_client,
+                search_module=self._bnet_search,
+                db=self._match_stats_db,
+            )
 
             from overstats.src.modules.dashen_match.service import DashenMatchModule
             self._match = DashenMatchModule(self._api_client, search_module=self._bnet_search)
@@ -455,6 +472,10 @@ class OwDashenPlugin(Star):
                 "    快速模式强度分析；场数 3-12，默认 12\n"
                 "  /ow 竞技强度 [BattleTag] [场数]\n"
                 "    竞技模式强度分析；场数 3-12，默认 12\n"
+                "  /ow 段位分布\n"
+                "    查看本地近期玩家样本的段位分布\n"
+                "  /ow 地图选取率 [天数]\n"
+                "    查看已记录对局的地图场次占比，默认 30 天\n"
                 "\n"
                 "【总结与榜单】\n"
                 "  /ow 今日总结 [BattleTag]\n"
@@ -471,6 +492,8 @@ class OwDashenPlugin(Star):
                 "    模式：快速/竞技；段位：全部到冠军\n"
                 "  /ow 英雄曲线 <英雄名> [模式] [段位]\n"
                 "    单英雄选取率历史曲线\n"
+                "  /ow 威能 <英雄名>\n"
+                "    查看英雄主要/次级威能及本地选取率\n"
                 "  /ow 商店\n"
                 "    当前守望先锋商店\n"
                 "  /ow 补丁 [类型]\n"
@@ -505,13 +528,16 @@ class OwDashenPlugin(Star):
             "段位": "查各赛季段位历史变化。\n用法：/ow 段位 [BattleTag]",
             "快速强度": "查快速模式强度分析。\n用法：/ow 快速强度 [BattleTag] [场数]\n场数范围 3-12，默认 12。",
             "竞技强度": "查竞技模式强度分析。\n用法：/ow 竞技强度 [BattleTag] [场数]\n场数范围 3-12，默认 12。",
+            "段位分布": "查看本地近 15 天玩家样本的段位分布。\n用法：/ow 段位分布\n说明：资料查询会持续积累本地样本，数据不会上传。",
+            "地图选取率": "查看本地已记录对局的地图场次占比。\n用法：/ow 地图选取率 [天数]\n天数范围 1-365，默认 30；查询对局详情会持续积累样本。",
             "今日总结": "查今日总结。\n用法：/ow 今日总结 [BattleTag]",
             "昨日总结": "查昨日总结。\n用法：/ow 昨日总结 [BattleTag]",
             "本周总结": "查本周总结（数据量大，需较长时间）。\n用法：/ow 本周总结 [BattleTag]",
             "省榜": "查询省份/地区职责排名。\n用法：/ow 省榜 [职责/省份] [职责/省份]\n职责可选：重装/输出/支援/开放，默认重装；省份默认北京。\n示例：/ow 省榜 输出 广东",
             "英雄榜": "查询省份/地区单英雄排名。\n用法：/ow 英雄榜 <英雄> [省份] [模式]\n模式可选：预设/开放，默认预设；省份默认北京。\n示例：/ow 英雄榜 安娜 广东",
-            "英雄热度": "查英雄选取率榜单。\n用法：/ow 英雄热度 [模式] [段位]\n模式：快速/竞技；段位：全部/青铜/白银/黄金/铂金/钻石/大师/宗师/冠军\n示例：/ow 英雄热度 竞技 大师",
+            "英雄热度": "查英雄选取率榜单。\n用法：/ow 英雄热度 [模式] [段位]\n模式：快速/竞技；段位：全部/青铜/白银/黄金/铂金/翡翠/钻石/大师/宗师/冠军\n示例：/ow 英雄热度 竞技 翡翠",
             "英雄曲线": "查单英雄选取率历史曲线。\n用法：/ow 英雄曲线 <英雄名> [模式] [段位]\n示例：/ow 英雄曲线 安娜 竞技 大师",
+            "威能": "查看指定英雄的次级/主要威能和本地选取率。\n用法：/ow 威能 <英雄名>\n示例：/ow 威能 安娜\n说明：查询对局详情会持续积累威能样本。",
             "商店": "查当前守望先锋商店。\n用法：/ow 商店",
             "补丁": "查补丁说明。\n用法：/ow 补丁 [类型]\n类型：最新/小更新/大更新\n示例：/ow 补丁 大更新",
             "猜英雄": "启动守望先锋趣味猜英雄/地图/音乐小游戏。\n用法：/ow 猜英雄",
@@ -810,6 +836,122 @@ class OwDashenPlugin(Star):
             logger.error(f"[ow_dashen] 竞技强度查询失败: {e}")
             yield event.plain_result(f"查询失败：{e}")
 
+    @ow.command("段位分布")
+    async def ow_rank_distribution(self, event: AstrMessageEvent):
+        '''查看本地近期玩家样本的段位分布'''
+        if self._match_stats_db is None or self._rank_distribution is None:
+            yield event.plain_result("段位分布模块未初始化。")
+            return
+        try:
+            from overstats.src.constants.ranks import RAW_RANK_ID_TO_NAME, RANK_ORDER, raw_rank_score_parts
+            from overstats.src.modules.internal_rank_distribution.requests import RankDistributionQuery
+            from overstats.src.modules.season_config import get_dashen_current_season
+
+            rank_rows = await asyncio.to_thread(self._match_stats_db.get_all_rank)
+            counts: dict[tuple[str, int], int] = {}
+            competitive_players = 0
+            pure_quick_players = 0
+            for player in rank_rows:
+                has_rank = False
+                for role_type in ("tank", "dps", "healer", "open"):
+                    parts = raw_rank_score_parts(player.get(role_type))
+                    if parts is None:
+                        continue
+                    raw_rank_id, division = parts
+                    rank_name = RAW_RANK_ID_TO_NAME.get(raw_rank_id)
+                    if not rank_name:
+                        continue
+                    counts[(rank_name, division)] = counts.get((rank_name, division), 0) + 1
+                    has_rank = True
+                if has_rank:
+                    competitive_players += 1
+                else:
+                    pure_quick_players += 1
+
+            if not counts:
+                yield event.plain_result(
+                    "暂无可用的本地段位样本。先使用 /ow 资料 查询一些玩家，插件会在本地逐步积累近 15 天数据。"
+                )
+                return
+
+            order = {rank_name: index for index, rank_name in enumerate(RANK_ORDER)}
+            distribution_rows = [
+                {
+                    "rank_bucket": rank_name,
+                    "rank_division": division,
+                    "sample_count": sample_count,
+                }
+                for (rank_name, division), sample_count in sorted(
+                    counts.items(),
+                    key=lambda item: (order.get(item[0][0], len(order)), item[0][1]),
+                )
+            ]
+            output = await self._rank_distribution.query_rank_distribution(
+                RankDistributionQuery(
+                    season=get_dashen_current_season(),
+                    rows=distribution_rows,
+                    mode_summary={
+                        "pure_quick_player_count": pure_quick_players,
+                        "competitive_player_count": competitive_players,
+                        "total_player_count": len(rank_rows),
+                    },
+                ),
+                render=True,
+            )
+            fallback = f"段位分布：{output.total_count} 条职责段位样本，{len(rank_rows)} 名近期玩家"
+            async for result in self._save_and_send_image(event, output.image, fallback):
+                yield result
+        except Exception as e:
+            logger.error(f"[ow_dashen] 段位分布查询失败: {e}")
+            yield event.plain_result(f"查询失败：{e}")
+
+    @ow.command("地图选取率")
+    async def ow_map_pick_rate(self, event: AstrMessageEvent, days: int | str | None = None):
+        '''查看本地已记录对局的地图场次占比'''
+        if self._match_stats_db is None:
+            yield event.plain_result("地图统计模块未初始化。")
+            return
+        normalized_days = self._coerce_int(days) or 30
+        if not 1 <= normalized_days <= 365:
+            yield event.plain_result("天数范围应为 1-365，例如：/ow 地图选取率 30")
+            return
+        try:
+            from overstats.src.modules.query_tool.service import load_query_tool
+
+            rows = await asyncio.to_thread(
+                self._match_stats_db.get_map_pick_summary,
+                days=normalized_days,
+                limit=20,
+            )
+            if not rows:
+                yield event.plain_result(
+                    "暂无地图统计样本。使用 /ow 对局详情 查询对局后，插件会在本地记录地图数据。"
+                )
+                return
+
+            config = load_query_tool(force_refresh=False)
+            map_lookup = {
+                str(item.get("guid") or item.get("mapGuid") or ""): item
+                for item in config.get("mapList", []) or []
+                if isinstance(item, dict)
+            }
+            total_count = int(rows[0].get("total_count") or 0)
+            lines = [f"地图选取率（近 {normalized_days} 天，共 {total_count} 场）"]
+            for index, row in enumerate(rows, start=1):
+                map_guid = str(row.get("map_guid") or "")
+                map_info = map_lookup.get(map_guid, {})
+                map_name = str(map_info.get("name") or map_guid or "未知地图")
+                map_mode = str(map_info.get("mode") or "").strip()
+                mode_text = f" · {map_mode}" if map_mode else ""
+                lines.append(
+                    f"{index}. {map_name}{mode_text}：{int(row.get('match_count') or 0)} 场 "
+                    f"({float(row.get('pick_rate') or 0.0) * 100:.1f}%)"
+                )
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            logger.error(f"[ow_dashen] 地图选取率查询失败: {e}")
+            yield event.plain_result(f"查询失败：{e}")
+
     @ow.command("今日总结")
     async def ow_summary_today(self, event: AstrMessageEvent, battletag: str | None = None):
         '''查今日总结'''
@@ -950,6 +1092,34 @@ class OwDashenPlugin(Star):
         except Exception as e:
             logger.error(f"[ow_dashen] 英雄曲线查询失败: {e}")
             yield event.plain_result(f"查询失败：{e}")
+
+    @ow.command("威能")
+    async def ow_hero_perk(self, event: AstrMessageEvent, hero: str):
+        '''查看英雄威能和本地选取率'''
+        if self._perk is None:
+            yield event.plain_result("威能模块未初始化。")
+            return
+        try:
+            from overstats.src.modules.ow_hero_perk.requests import OWHeroPerkQuery
+
+            await self._ensure_query_tool_assets_ready()
+            output = await self._perk.query_perk(OWHeroPerkQuery(hero=hero.strip()), render=True)
+            lines = [f"{output.hero.hero_name} 威能"]
+            for bucket in (output.minor, output.major):
+                lines.append(f"【{bucket.title}】")
+                for perk in bucket.perks[:4]:
+                    lines.append(f"{perk.name}：{perk.pick_rate * 100:.1f}%")
+            async for result in self._save_and_send_image(event, output.image, "\n".join(lines)):
+                yield result
+        except Exception as e:
+            logger.error(f"[ow_dashen] 威能查询失败: {e}")
+            message = str(e)
+            if "No perk data" in message or "hero_perk_empty" in message:
+                yield event.plain_result(
+                    "暂无该英雄的本地威能样本。使用 /ow 对局详情 查询包含该英雄的对局后再试。"
+                )
+            else:
+                yield event.plain_result(f"查询失败：{e}")
 
     @ow.command("商店")
     async def ow_shop(self, event: AstrMessageEvent):
