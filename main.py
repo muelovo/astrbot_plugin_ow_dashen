@@ -15,8 +15,9 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 _PLUGIN_ROOT_STR = str(_PLUGIN_DIR)
-if _PLUGIN_ROOT_STR not in sys.path:
-    sys.path.insert(0, _PLUGIN_ROOT_STR)
+while _PLUGIN_ROOT_STR in sys.path:
+    sys.path.remove(_PLUGIN_ROOT_STR)
+sys.path.insert(0, _PLUGIN_ROOT_STR)
 
 from overstats.paths import get_overstats_data_dir, get_plugin_data_dir
 
@@ -211,7 +212,6 @@ class OwDashenPlugin(Star):
             self._profile = DashenProfileModule(
                 self._api_client,
                 search_module=self._bnet_search,
-                db=self._match_stats_db,
             )
 
             from overstats.src.modules.dashen_match.service import DashenMatchModule
@@ -604,6 +604,12 @@ class OwDashenPlugin(Star):
             output_cfg = self.config.get("output", {})
             prefer_img = output_cfg.get("prefer_image_for_profile", True)
             result = await self._profile.query_profile(query, render=prefer_img)
+            if self._match_stats_db is not None:
+                await asyncio.to_thread(
+                    self._match_stats_db.record_rank_profile,
+                    result.bundle.profile_card,
+                    result.bundle.sport,
+                )
             lines = [f"玩家：{result.resolved_bnet.full_id if result.resolved_bnet else tag}"]
             if prefer_img and result.image:
                 async for r in self._save_and_send_image(event, result.image, "\n".join(lines)):

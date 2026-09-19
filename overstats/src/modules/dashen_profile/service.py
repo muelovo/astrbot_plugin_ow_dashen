@@ -5,12 +5,10 @@ from typing import Any, Dict, Optional
 
 try:
     from overstats.src.client.apiclient import DashenAPIClient
-    from overstats.src.db import IDPoolDB
     from overstats.src.modules.errors import ModuleError
     from overstats.src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
 except ModuleNotFoundError:
     from src.client.apiclient import DashenAPIClient
-    from src.db import IDPoolDB
     from src.modules.errors import ModuleError
     from src.modules.bnet_search import BnetSearchModule, BnetSearchResult, bnet_search_module
 
@@ -32,12 +30,10 @@ class DashenProfileModule:
         self,
         api_client: Optional[DashenAPIClient] = None,
         search_module: Optional[BnetSearchModule] = None,
-        db: Optional[IDPoolDB] = None,
     ) -> None:
         self.requests = DashenProfileRequests(api_client)
         self.engine = DashenProfileEngine(self.requests)
         self.search_module = search_module or bnet_search_module
-        self.db = db or IDPoolDB()
 
     async def query_profile(
         self,
@@ -60,11 +56,6 @@ class DashenProfileModule:
                     "upstream_msg": profile_card.get("msg"),
                 },
             )
-
-        try:
-            self.db.record_rank_profile(bundle.profile_card, bundle.sport)
-        except Exception as exc:
-            print(f"[overstats] failed to record rank profile: {exc}")
 
         image = None
         if render:
