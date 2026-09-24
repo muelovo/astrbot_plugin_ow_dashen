@@ -29,6 +29,11 @@ _BINDINGS_PATH = _PLUGIN_DATA_DIR / "bindings.json"
 _TEMP_IMAGE_DIR = _PLUGIN_DATA_DIR / "temp"
 
 _CN_MODE_MAP = {"快速": "quick", "竞技": "competitive"}
+_CN_TREEMAP_MODE_MAP = {
+    **_CN_MODE_MAP,
+    "快速6v6": "quick6v6", "竞技6v6": "competitive6v6",
+    "开放": "open", "开放竞技": "competitive_open",
+}
 _CN_RANK_MAP = {
     "全部": "all", "青铜": "Bronze", "白银": "Silver", "黄金": "Gold",
     "铂金": "Platinum", "白金": "Platinum", "翡翠": "Emerald",
@@ -140,6 +145,7 @@ class OwDashenPlugin(Star):
         self._quick_strength = None
         self._competitive_strength = None
         self._summary = None
+        self._hero_treemap = None
         self._pick_rate = None
         self._perk = None
         self._rank_distribution = None
@@ -229,6 +235,9 @@ class OwDashenPlugin(Star):
             from overstats.src.modules.dashen_summary.service import DashenSummaryModule
             self._summary = DashenSummaryModule(search_module=self._bnet_search)
 
+            from overstats.src.modules.dashen_hero_treemap.service import DashenHeroTreemapModule
+            self._hero_treemap = DashenHeroTreemapModule(self._api_client, search_module=self._bnet_search)
+
             from overstats.src.modules.dashen_match.requests import DashenMatchRequests
             match_requests = DashenMatchRequests(self._api_client)
             from overstats.src.modules.dashen_sameplay.service import DashenSameplayModule
@@ -254,6 +263,7 @@ class OwDashenPlugin(Star):
             self._quick_strength = None
             self._competitive_strength = None
             self._summary = None
+            self._hero_treemap = None
             self._sameplay = None
             self._rank_leaderboard = None
             self._hero_leaderboard = None
@@ -482,6 +492,8 @@ class OwDashenPlugin(Star):
                 "  /ow 昨日总结 [BattleTag]\n"
                 "  /ow 本周总结 [BattleTag]\n"
                 "    生成对局总结图；本周总结可能较慢\n"
+                "  /ow 英雄云图 [BattleTag] [模式]\n"
+                "    生成赛季英雄使用云图\n"
                 "  /ow 省榜 [职责/省份] [职责/省份]\n"
                 "    查询省份/地区职责排名\n"
                 "  /ow 英雄榜 <英雄> [省份] [模式]\n"
@@ -533,6 +545,7 @@ class OwDashenPlugin(Star):
             "今日总结": "查今日总结。\n用法：/ow 今日总结 [BattleTag]",
             "昨日总结": "查昨日总结。\n用法：/ow 昨日总结 [BattleTag]",
             "本周总结": "查本周总结（数据量大，需较长时间）。\n用法：/ow 本周总结 [BattleTag]",
+            "英雄云图": "生成赛季英雄使用云图。\n用法：/ow 英雄云图 [BattleTag] [模式]\n模式：快速/竞技/快速6v6/竞技6v6/开放/开放竞技，默认快速。",
             "省榜": "查询省份/地区职责排名。\n用法：/ow 省榜 [职责/省份] [职责/省份]\n职责可选：重装/输出/支援/开放，默认重装；省份默认北京。\n示例：/ow 省榜 输出 广东",
             "英雄榜": "查询省份/地区单英雄排名。\n用法：/ow 英雄榜 <英雄> [省份] [模式]\n模式可选：预设/开放，默认预设；省份默认北京。\n示例：/ow 英雄榜 安娜 广东",
             "英雄热度": "查英雄选取率榜单。\n用法：/ow 英雄热度 [模式] [段位]\n模式：快速/竞技；段位：全部/青铜/白银/黄金/铂金/翡翠/钻石/大师/宗师/冠军\n示例：/ow 英雄热度 竞技 翡翠",
@@ -1046,6 +1059,34 @@ class OwDashenPlugin(Star):
                 yield event.plain_result("\n".join(lines))
         except Exception as e:
             logger.error(f"[ow_dashen] 本周总结查询失败: {e}")
+            yield event.plain_result(f"查询失败：{e}")
+
+    @ow.command("英雄云图")
+    async def ow_hero_treemap(
+        self, event: AstrMessageEvent, battletag: str | None = None, mode: str | None = None
+    ):
+        '''查赛季英雄使用云图'''
+        if not self._account_features_ready() or self._hero_treemap is None:
+            yield event.plain_result(self._account_not_configured_hint())
+            return
+        if mode is None and battletag and battletag.strip() in _CN_TREEMAP_MODE_MAP:
+            battletag, mode = None, battletag
+        tag = await self._resolve_battletag(event, battletag)
+        if not tag:
+            yield event.plain_result(self._no_bind_hint())
+            return
+        selected_mode = _CN_TREEMAP_MODE_MAP.get((mode or "").strip(), mode or "quick")
+        try:
+            from overstats.src.modules.dashen_hero_treemap.requests import DashenHeroTreemapQuery
+
+            result = await self._hero_treemap.query_treemap(
+                DashenHeroTreemapQuery(bnet_id=tag, mode=selected_mode), render=True
+            )
+            fallback = f"玩家：{result.player.display_name}\n赛季：{result.season.logical}\n英雄数：{result.hero_count}"
+            async for item in self._save_and_send_image(event, result.image, fallback):
+                yield item
+        except Exception as e:
+            logger.error(f"[ow_dashen] 英雄云图查询失败: {e}")
             yield event.plain_result(f"查询失败：{e}")
 
     @ow.command("英雄热度")

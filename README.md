@@ -216,6 +216,7 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 /ow 地图选取率
 /ow 威能 安娜
 /ow 今日总结
+/ow 英雄云图
 /ow 商店
 /ow 补丁
 ```
@@ -247,9 +248,12 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 /ow 今日总结 [BattleTag]
 /ow 昨日总结 [BattleTag]
 /ow 本周总结 [BattleTag]
+/ow 英雄云图 [BattleTag] [模式]
 ```
 
 ### 英雄 / 商店 / 补丁
+
+英雄云图模式支持 `快速`、`竞技`、`快速6v6`、`竞技6v6`、`开放` 和 `开放竞技`，默认快速。已绑定账号可直接使用 `/ow 英雄云图 竞技`。
 
 ```text
 /ow 英雄热度 [模式] [段位]
