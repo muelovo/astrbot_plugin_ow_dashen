@@ -94,7 +94,7 @@ def read_query_tool(default: Dict[str, Any] | None = None) -> Dict[str, Any]:
     if not path.exists():
         return normalize_query_tool_config(default)
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         if isinstance(data, dict):
             return normalize_query_tool_config(data)
         return normalize_query_tool_config(default)
@@ -388,7 +388,7 @@ def _read_asset_manifest() -> Dict[str, Any]:
     if not QUERY_TOOL_ASSET_MANIFEST_PATH.exists():
         return {}
     try:
-        data = json.loads(QUERY_TOOL_ASSET_MANIFEST_PATH.read_text(encoding="utf-8"))
+        data = json.loads(QUERY_TOOL_ASSET_MANIFEST_PATH.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}

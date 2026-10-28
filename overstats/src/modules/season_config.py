@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_QUERY_TOOL_PATH = PROJECT_ROOT / "res" / "query_tool.json"
 QUERY_TOOL_PATH = get_overstats_data_dir() / "query_tool.json"
-DEFAULT_DASHEN_CURRENT_SEASON = 24
+DEFAULT_DASHEN_CURRENT_SEASON = 25
 DEFAULT_DASHEN_HISTORY_START_SEASON = 15
 
 
@@ -70,7 +70,7 @@ def read_local_query_tool(default: Optional[Dict[str, Any]] = None) -> Dict[str,
     if not path.exists():
         return normalize_query_tool_config(fallback)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         print(f"[overstats] failed to read query_tool season config {path}: {exc}")
         return normalize_query_tool_config(fallback)
