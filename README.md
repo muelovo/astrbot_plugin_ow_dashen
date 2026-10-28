@@ -323,6 +323,14 @@ AstrBot 插件独立数据目录（data/plugin_data/astrbot_plugin_ow_dashen/）
 
 这些命令请求更多上游数据，耗时会更长。
 
+### 5. 大神搜索接口维护时
+
+大神搜索接口临时关闭时，插件会先尝试内置的白名单搜索账号；如果仍不可用，则回退到本地搜索缓存，所以之前成功查询过的 BattleTag 还能继续使用。接口恢复后会自动切回实时搜索，不需要手动切换。
+
+搜索缓存保存在 `data/plugin_data/astrbot_plugin_ow_dashen/overstats/db/bnet_search_cache.sqlite3`，只保存 BattleTag 与查询凭证，不参与战绩统计；关闭数据库写入（`ENABLE_DATABASE_WRITE`）时不会写入缓存。
+
+白名单账号默认与上游 Overstats 保持一致，如需替换可设置环境变量 `OVERSTATS_SEARCH_FALLBACK_ACCOUNTS`，值为 JSON 数组，例如 `[{"name":"account-1","role_id":123456,"token":"..."}]`。
+
 ## 安全提醒
 
 不要把 token 等涉及个人隐私的敏感信息发到公开仓库、公开群聊或 issue。
